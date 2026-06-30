@@ -14,6 +14,18 @@ fn main() -> Result<()> {
         }
         Command::Setting => println!("setting"),
         Command::Init => println!("init"),
+        Command::RecentRecord { path } => {
+            let db = at::history::HistoryDb::open(&at::history::default_history_path())?;
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)?
+                .as_secs() as i64;
+            db.record_path_at(
+                std::path::Path::new(&path),
+                at::history::PathKind::Dir,
+                at::history::HistorySource::ShellCdHook,
+                now,
+            )?;
+        }
         Command::Shell { command } => match command {
             ShellCommand::Print => println!("{}", at::shell::functions_block()),
             ShellCommand::Hook => println!("{}", at::shell::cd_hook_block()),

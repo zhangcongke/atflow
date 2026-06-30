@@ -33,6 +33,9 @@ pub enum Command {
     },
     Setting,
     Init,
+    RecentRecord {
+        path: String,
+    },
     Shell {
         #[command(subcommand)]
         command: ShellCommand,
