@@ -8,15 +8,15 @@ pub fn shell_quote(input: &str) -> String {
 }
 
 pub fn cd_command(path: &Path) -> String {
-    format!("cd {}", shell_quote(&path.display().to_string()))
+    format!("cd -- {}", shell_quote(&path.display().to_string()))
 }
 
 pub fn functions_block() -> &'static str {
-    r#"@()        { eval "$(at menu --shell "$@")"; }
-@recent()  { eval "$(at recent --shell "$@")"; }
-@flow()    { eval "$(at flow --shell "$@")"; }
-@search()  { eval "$(at search --shell "$@")"; }
-@setting() { at setting "$@"; }"#
+    r#"@() { local out; out="$(command at menu --shell "$@")" || return; eval "$out"; }
+@recent() { local out; out="$(command at recent --shell "$@")" || return; eval "$out"; }
+@flow() { local out; out="$(command at flow --shell "$@")" || return; eval "$out"; }
+@search() { local out; out="$(command at search --shell "$@")" || return; eval "$out"; }
+@setting() { command at setting "$@"; }"#
 }
 
 pub fn cd_hook_block() -> &'static str {
@@ -42,6 +42,7 @@ mod tests {
 
     #[test]
     fn quotes_paths_for_shell_eval() {
+        assert_eq!(shell_quote(""), "''");
         assert_eq!(shell_quote("/home/a b/project"), "'/home/a b/project'");
         assert_eq!(
             shell_quote("/home/it's/project"),
@@ -53,8 +54,9 @@ mod tests {
     fn cd_command_wraps_quoted_path() {
         assert_eq!(
             cd_command(&PathBuf::from("/home/congke/work/at flow")),
-            "cd '/home/congke/work/at flow'"
+            "cd -- '/home/congke/work/at flow'"
         );
+        assert_eq!(cd_command(&PathBuf::from("-x")), "cd -- '-x'");
     }
 
     #[test]
@@ -64,5 +66,16 @@ mod tests {
         assert!(block.contains("@recent()"));
         assert!(block.contains("@flow()"));
         assert!(block.contains("@search()"));
+    }
+
+    #[test]
+    fn functions_use_command_at_and_propagate_failures() {
+        let block = functions_block();
+        assert!(block.contains(r#"out="$(command at menu --shell "$@")" || return"#));
+        assert!(block.contains(r#"out="$(command at recent --shell "$@")" || return"#));
+        assert!(block.contains(r#"out="$(command at flow --shell "$@")" || return"#));
+        assert!(block.contains(r#"out="$(command at search --shell "$@")" || return"#));
+        assert!(block.contains(r#"@setting() { command at setting "$@"; }"#));
+        assert!(!block.contains(r#"eval "$(at"#));
     }
 }

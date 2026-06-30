@@ -32,3 +32,14 @@ fn shell_print_outputs_functions() {
         .stdout(predicates::str::contains("@()"))
         .stdout(predicates::str::contains("@search()"));
 }
+
+#[test]
+fn shell_hook_outputs_cd_recorder() {
+    Command::cargo_bin("at")
+        .unwrap()
+        .args(["shell", "hook"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("_atflow_record_cd"))
+        .stdout(predicates::str::contains("recent-record"));
+}
