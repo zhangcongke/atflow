@@ -15,8 +15,9 @@ use ratatui::{
 };
 use std::io;
 
+use crate::flow::{FlowEntry, FlowState};
 use crate::search::SearchFilter;
-use crate::ui::palette::{PaletteItem, PaletteState};
+use crate::ui::palette::{PaletteItem, PaletteItemKind, PaletteState};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UiOutcome {
@@ -34,7 +35,7 @@ pub struct UiResponse {
 
 pub fn run_palette(title: &str, mut state: PaletteState) -> Result<UiOutcome> {
     let _session = TerminalSession::enter()?;
-    let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
+    let mut terminal = Terminal::new(CrosstermBackend::new(io::stderr()))?;
     terminal.clear()?;
 
     loop {
@@ -59,7 +60,7 @@ where
     F: FnMut(&str, SearchFilter) -> Result<Vec<PaletteItem>>,
 {
     let _session = TerminalSession::enter()?;
-    let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
+    let mut terminal = Terminal::new(CrosstermBackend::new(io::stderr()))?;
     terminal.clear()?;
 
     loop {
@@ -69,6 +70,25 @@ where
                 continue;
             }
             if let Some(outcome) = handle_search_key(&mut state, key, &mut refresh)? {
+                return Ok(UiResponse { outcome, state });
+            }
+        }
+    }
+}
+
+pub fn run_flow_palette(title: &str, mut flow: FlowState) -> Result<UiResponse> {
+    let _session = TerminalSession::enter()?;
+    let mut terminal = Terminal::new(CrosstermBackend::new(io::stderr()))?;
+    terminal.clear()?;
+    let mut state = flow_palette_state(&flow)?;
+
+    loop {
+        terminal.draw(|frame| render_palette(frame, title, &state))?;
+        if let Event::Key(key) = event::read()? {
+            if !is_key_press(key) {
+                continue;
+            }
+            if let Some(outcome) = handle_flow_key(&mut flow, &mut state, key)? {
                 return Ok(UiResponse { outcome, state });
             }
         }
@@ -190,6 +210,143 @@ where
     Ok(outcome)
 }
 
+fn handle_flow_key(
+    flow: &mut FlowState,
+    state: &mut PaletteState,
+    key: KeyEvent,
+) -> Result<Option<UiOutcome>> {
+    let outcome = match key {
+        KeyEvent {
+            code: KeyCode::Left,
+            ..
+        } => {
+            flow.parent();
+            *state = flow_palette_state(flow)?;
+            None
+        }
+        KeyEvent {
+            code: KeyCode::Char('h' | 'H'),
+            modifiers,
+            ..
+        } if is_plain_text_modifier(modifiers) => {
+            flow.parent();
+            *state = flow_palette_state(flow)?;
+            None
+        }
+        KeyEvent {
+            code: KeyCode::Right,
+            ..
+        } => {
+            let before = flow.cwd.clone();
+            if let Some(entry) = selected_flow_entry(state) {
+                flow.enter(&entry);
+            }
+            if flow.cwd != before {
+                *state = flow_palette_state(flow)?;
+            } else {
+                sync_flow_selection(flow, state);
+            }
+            None
+        }
+        KeyEvent {
+            code: KeyCode::Char('l' | 'L'),
+            modifiers,
+            ..
+        } if is_plain_text_modifier(modifiers) => {
+            let before = flow.cwd.clone();
+            if let Some(entry) = selected_flow_entry(state) {
+                flow.enter(&entry);
+            }
+            if flow.cwd != before {
+                *state = flow_palette_state(flow)?;
+            } else {
+                sync_flow_selection(flow, state);
+            }
+            None
+        }
+        KeyEvent {
+            code: KeyCode::Esc, ..
+        } => Some(UiOutcome::Cancelled),
+        KeyEvent {
+            code: KeyCode::Enter,
+            ..
+        } => state.selected_index().map(UiOutcome::Selected),
+        KeyEvent {
+            code: KeyCode::Up, ..
+        } => {
+            state.move_up();
+            sync_flow_selection(flow, state);
+            None
+        }
+        KeyEvent {
+            code: KeyCode::Down,
+            ..
+        } => {
+            state.move_down();
+            sync_flow_selection(flow, state);
+            None
+        }
+        KeyEvent {
+            code: KeyCode::Char(' '),
+            modifiers,
+            ..
+        } if is_plain_text_modifier(modifiers) => {
+            state.toggle_expanded();
+            None
+        }
+        KeyEvent {
+            code: KeyCode::Char('e' | 'E'),
+            modifiers,
+            ..
+        } if modifiers.contains(KeyModifiers::CONTROL) => {
+            state.selected_index().map(UiOutcome::Editor)
+        }
+        KeyEvent {
+            code: KeyCode::Char('o' | 'O'),
+            modifiers,
+            ..
+        } if modifiers.contains(KeyModifiers::CONTROL) => {
+            state.selected_index().map(UiOutcome::System)
+        }
+        _ => None,
+    };
+    Ok(outcome)
+}
+
+fn sync_flow_selection(flow: &mut FlowState, state: &PaletteState) {
+    flow.selected = state.selected_index().unwrap_or(0);
+}
+
+fn selected_flow_entry(state: &PaletteState) -> Option<FlowEntry> {
+    let item = state.selected_item()?;
+    Some(FlowEntry {
+        path: item.path.clone()?,
+        name: item.label.clone(),
+        is_dir: matches!(item.kind, PaletteItemKind::Dir),
+    })
+}
+
+fn flow_palette_state(flow: &FlowState) -> Result<PaletteState> {
+    let mut state = PaletteState::new(flow.entries()?.into_iter().map(flow_item).collect());
+    if !state.items.is_empty() {
+        state.selected = flow.selected.min(state.items.len() - 1);
+    }
+    Ok(state)
+}
+
+fn flow_item(entry: FlowEntry) -> PaletteItem {
+    PaletteItem {
+        label: entry.name,
+        path: Some(entry.path),
+        kind: if entry.is_dir {
+            PaletteItemKind::Dir
+        } else {
+            PaletteItemKind::File
+        },
+        source: "flow".to_owned(),
+    }
+}
+
 fn refresh_items<F>(state: &mut PaletteState, refresh: &mut F) -> Result<()>
 where
     F: FnMut(&str, SearchFilter) -> Result<Vec<PaletteItem>>,
@@ -308,12 +465,12 @@ struct TerminalSession;
 impl TerminalSession {
     fn enter() -> Result<Self> {
         enable_raw_mode()?;
-        let mut stdout = io::stdout();
-        if let Err(error) = execute!(stdout, EnterAlternateScreen) {
+        let mut stderr = io::stderr();
+        if let Err(error) = execute!(stderr, EnterAlternateScreen) {
             restore_terminal();
             return Err(error.into());
         }
-        if let Err(error) = execute!(stdout, Hide) {
+        if let Err(error) = execute!(stderr, Hide) {
             restore_terminal();
             return Err(error.into());
         }
@@ -328,16 +485,18 @@ impl Drop for TerminalSession {
 }
 
 fn restore_terminal() {
-    let mut stdout = io::stdout();
-    let _ = execute!(stdout, Show, LeaveAlternateScreen);
+    let mut stderr = io::stderr();
+    let _ = execute!(stderr, Show, LeaveAlternateScreen);
     let _ = disable_raw_mode();
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::flow::FlowState;
     use crate::ui::palette::{PaletteItem, PaletteItemKind};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use std::fs;
 
     fn item(label: &str) -> PaletteItem {
         PaletteItem {
@@ -442,5 +601,49 @@ mod tests {
         .unwrap_err();
 
         assert_eq!(error.to_string(), "search unavailable");
+    }
+
+    #[test]
+    fn flow_palette_preserves_parent_entry_label() {
+        let dir = tempfile::tempdir().unwrap();
+        let child = dir.path().join("child");
+        fs::create_dir(&child).unwrap();
+        let flow = FlowState::new(child);
+
+        let state = flow_palette_state(&flow).unwrap();
+
+        assert_eq!(state.items[0].label, "..");
+    }
+
+    #[test]
+    fn flow_right_enters_selected_directory_and_refreshes_items() {
+        let dir = tempfile::tempdir().unwrap();
+        let child = dir.path().join("src");
+        fs::create_dir(&child).unwrap();
+        let mut flow = FlowState::new(dir.path().to_path_buf());
+        let mut state = flow_palette_state(&flow).unwrap();
+        state.selected = 1;
+
+        let outcome = handle_flow_key(&mut flow, &mut state, key(KeyCode::Right)).unwrap();
+
+        assert_eq!(outcome, None);
+        assert_eq!(flow.cwd, child);
+        assert_eq!(state.selected, 0);
+        assert_eq!(state.items[0].label, "..");
+    }
+
+    #[test]
+    fn flow_left_moves_to_parent_and_refreshes_items() {
+        let dir = tempfile::tempdir().unwrap();
+        let child = dir.path().join("src");
+        fs::create_dir(&child).unwrap();
+        let mut flow = FlowState::new(child);
+        let mut state = flow_palette_state(&flow).unwrap();
+
+        let outcome = handle_flow_key(&mut flow, &mut state, key(KeyCode::Left)).unwrap();
+
+        assert_eq!(outcome, None);
+        assert_eq!(flow.cwd, dir.path());
+        assert_eq!(state.selected, 0);
     }
 }

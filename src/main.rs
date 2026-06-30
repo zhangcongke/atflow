@@ -1,12 +1,13 @@
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use at::cli::{Cli, Command, ShellCommand};
 use at::config::{Config, default_config_path};
 use at::history::{HistoryDb, HistorySource, PathKind, default_history_path};
 use at::open::{OpenAction, OpenMode, resolve_open_action};
 use at::search::{SearchFilter, SearchRequest, search};
 use at::ui::palette::{PaletteItem, PaletteItemKind, PaletteState};
-use at::ui::runtime::{UiOutcome, run_palette, run_search_palette};
+use at::ui::runtime::{UiOutcome, run_flow_palette, run_palette, run_search_palette};
 use clap::Parser;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 fn main() -> Result<()> {
@@ -17,7 +18,7 @@ fn main() -> Result<()> {
         Command::Recent { shell } => run_recent(shell),
         Command::Flow { shell } => run_flow(shell),
         Command::Search { shell, query } => run_search(shell, Command::search_query(&query)),
-        Command::Setting => run_setting(),
+        Command::Setting => run_setting(false),
         Command::Init => at::init::run_init(),
         Command::RecentRecord { path } => record_cd_hook(Path::new(&path)),
         Command::Shell { command } => match command {
@@ -49,7 +50,7 @@ fn run_menu(shell: bool) -> Result<()> {
         UiOutcome::Selected(0) => run_recent(shell),
         UiOutcome::Selected(1) => run_flow(shell),
         UiOutcome::Selected(2) => run_search(shell, None),
-        UiOutcome::Selected(3) => run_setting(),
+        UiOutcome::Selected(3) => run_setting(shell),
         _ => Ok(()),
     }
 }
@@ -72,18 +73,9 @@ fn run_flow(shell: bool) -> Result<()> {
         &std::env::current_dir()?,
         config.general.start_from_git_root,
     );
-    let items = at::flow::list_entries(&start)?
-        .into_iter()
-        .map(|entry| {
-            if entry.is_dir {
-                PaletteItem::dir(entry.path, "flow")
-            } else {
-                PaletteItem::file(entry.path, "flow")
-            }
-        })
-        .collect();
+    let response = run_flow_palette("@flow", at::flow::FlowState::new(start))?;
 
-    handle_palette_result("@flow", PaletteState::new(items), shell, &config)
+    handle_open_outcome(&response.outcome, &response.state, shell, &config)
 }
 
 fn run_search(shell: bool, query: Option<String>) -> Result<()> {
@@ -101,9 +93,24 @@ fn run_search(shell: bool, query: Option<String>) -> Result<()> {
 }
 
 fn search_roots(config: &Config) -> Result<Vec<PathBuf>> {
-    let mut roots = vec![std::env::current_dir()?];
+    let db = HistoryDb::open(&default_history_path())?;
+    let recent = db
+        .recent_dirs(config.general.max_recent)?
+        .into_iter()
+        .map(|entry| entry.path)
+        .collect();
+    Ok(search_roots_from(config, std::env::current_dir()?, recent))
+}
+
+fn search_roots_from(
+    config: &Config,
+    current_dir: PathBuf,
+    recent_dirs: Vec<PathBuf>,
+) -> Vec<PathBuf> {
+    let mut roots = vec![current_dir];
     roots.extend(config.search.roots.iter().map(|root| expand_home(root)));
-    Ok(roots)
+    roots.extend(recent_dirs);
+    roots
 }
 
 fn search_items(
@@ -120,9 +127,17 @@ fn search_items(
         ignore_names: ignore_names.to_vec(),
         limit: 100,
     })?;
+    let mut seen = HashSet::new();
 
     Ok(results
         .into_iter()
+        .filter(|result| {
+            let key = result
+                .path
+                .canonicalize()
+                .unwrap_or_else(|_| result.path.clone());
+            seen.insert(key)
+        })
         .map(|result| {
             if result.is_dir {
                 PaletteItem::dir(result.path, result.source)
@@ -195,12 +210,20 @@ fn run_open_action(
             }
         }
         OpenAction::Editor { command, path } | OpenAction::System { command, path } => {
-            std::process::Command::new(&command)
-                .arg(&path)
-                .status()
-                .with_context(|| format!("failed to launch opener `{command}`"))?;
+            launch_opener(&command, &path)?;
             record_atflow_open(&path, PathKind::File, config)?;
         }
+    }
+    Ok(())
+}
+
+fn launch_opener(command: &str, path: &Path) -> Result<()> {
+    let status = std::process::Command::new(command)
+        .arg(path)
+        .status()
+        .with_context(|| format!("failed to launch opener `{command}`"))?;
+    if !status.success() {
+        bail!("opener `{command}` exited with {status}");
     }
     Ok(())
 }
@@ -227,6 +250,10 @@ fn record_atflow_open_at(
 }
 
 fn record_cd_hook(path: &Path) -> Result<()> {
+    let config = load_config()?;
+    if !config.history.record_shell_cd {
+        return Ok(());
+    }
     let db = HistoryDb::open(&default_history_path())?;
     db.record_path_at(path, PathKind::Dir, HistorySource::ShellCdHook, unix_now()?)
 }
@@ -249,8 +276,25 @@ fn expand_home(value: &str) -> PathBuf {
     PathBuf::from(value)
 }
 
-fn run_setting() -> Result<()> {
-    println!("{}", default_config_path().display());
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InfoStream {
+    Stdout,
+    Stderr,
+}
+
+fn setting_stream(shell: bool) -> InfoStream {
+    if shell {
+        InfoStream::Stderr
+    } else {
+        InfoStream::Stdout
+    }
+}
+
+fn run_setting(shell: bool) -> Result<()> {
+    match setting_stream(shell) {
+        InfoStream::Stdout => println!("{}", default_config_path().display()),
+        InfoStream::Stderr => eprintln!("{}", default_config_path().display()),
+    }
     Ok(())
 }
 
@@ -262,6 +306,7 @@ mod tests {
     use at::open::OpenMode;
     use at::ui::palette::{PaletteItem, PaletteState};
     use at::ui::runtime::UiOutcome;
+    use std::fs;
     use std::path::{Path, PathBuf};
 
     #[test]
@@ -345,5 +390,52 @@ mod tests {
             expand_home("relative/project"),
             PathBuf::from("relative/project")
         );
+    }
+
+    #[test]
+    fn setting_stream_uses_stderr_for_shell_mode() {
+        assert_eq!(setting_stream(false), InfoStream::Stdout);
+        assert_eq!(setting_stream(true), InfoStream::Stderr);
+    }
+
+    #[test]
+    fn launch_opener_reports_nonzero_exit() {
+        let error = launch_opener("false", Path::new("/tmp/atflow-opener-test")).unwrap_err();
+
+        assert!(error.to_string().contains("opener `false` exited"));
+    }
+
+    #[test]
+    fn search_roots_include_recent_dirs_after_current_and_configured_roots() {
+        let mut config = Config::default();
+        config.search.roots = vec!["/configured".to_owned()];
+
+        let roots = search_roots_from(
+            &config,
+            PathBuf::from("/current"),
+            vec![PathBuf::from("/recent")],
+        );
+
+        assert_eq!(
+            roots,
+            vec![
+                PathBuf::from("/current"),
+                PathBuf::from("/configured"),
+                PathBuf::from("/recent"),
+            ]
+        );
+    }
+
+    #[test]
+    fn search_items_deduplicates_results_from_overlapping_roots() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("project");
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("src/needle.rs"), "").unwrap();
+
+        let items = search_items(&[root.clone(), root], &[], "needle", SearchFilter::All).unwrap();
+
+        assert_eq!(items.len(), 1);
+        assert!(items[0].path.as_ref().unwrap().ends_with("needle.rs"));
     }
 }

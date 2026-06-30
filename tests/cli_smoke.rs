@@ -1,5 +1,6 @@
 use assert_cmd::Command as AssertCommand;
 use at::cli::{Cli, Command as CliCommand};
+use at::config::Config;
 use at::history::{HistoryDb, HistorySource, PathKind};
 use clap::Parser;
 use std::path::PathBuf;
@@ -75,7 +76,8 @@ fn shell_hook_outputs_cd_recorder() {
 }
 
 #[test]
-fn recent_record_writes_shell_cd_history() {
+fn recent_record_defaults_to_noop_without_config() {
+    let config_home = tempfile::tempdir().unwrap();
     let data_home = tempfile::tempdir().unwrap();
     let recorded_path = PathBuf::from("/tmp/atflow-cli-smoke");
     let db_path = data_home.path().join("at").join("history.sqlite");
@@ -83,6 +85,30 @@ fn recent_record_writes_shell_cd_history() {
     AssertCommand::cargo_bin("at")
         .unwrap()
         .args(["recent-record", recorded_path.to_str().unwrap()])
+        .env("XDG_CONFIG_HOME", config_home.path())
+        .env("XDG_DATA_HOME", data_home.path())
+        .assert()
+        .success()
+        .stdout("");
+
+    assert!(!db_path.exists());
+}
+
+#[test]
+fn recent_record_writes_shell_cd_history_when_enabled() {
+    let config_home = tempfile::tempdir().unwrap();
+    let data_home = tempfile::tempdir().unwrap();
+    let recorded_path = PathBuf::from("/tmp/atflow-cli-smoke");
+    let config_path = config_home.path().join("at").join("config.toml");
+    let db_path = data_home.path().join("at").join("history.sqlite");
+    let mut config = Config::default();
+    config.history.record_shell_cd = true;
+    config.save_to(&config_path).unwrap();
+
+    AssertCommand::cargo_bin("at")
+        .unwrap()
+        .args(["recent-record", recorded_path.to_str().unwrap()])
+        .env("XDG_CONFIG_HOME", config_home.path())
         .env("XDG_DATA_HOME", data_home.path())
         .assert()
         .success()
