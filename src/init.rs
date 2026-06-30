@@ -47,6 +47,17 @@ pub fn config_from_answers_with_base(mut config: Config, answers: &InitAnswers) 
     config
 }
 
+pub fn answers_from_config(config: &Config) -> InitAnswers {
+    InitAnswers {
+        install_shell_functions: true,
+        enable_cd_hook: config.history.record_shell_cd,
+        editor: config.open.editor.clone(),
+        search_roots: config.search.roots.clone(),
+        theme: config.general.theme,
+        start_from_git_root: config.general.start_from_git_root,
+    }
+}
+
 pub fn run_init() -> Result<()> {
     let stdin = io::stdin();
     let stdout = io::stdout();
@@ -56,7 +67,9 @@ pub fn run_init() -> Result<()> {
 fn run_init_with<R: BufRead, W: Write>(input: &mut R, output: &mut W) -> Result<()> {
     writeln!(output, "Atflow setup")?;
 
-    let defaults = InitAnswers::default();
+    let path = default_config_path();
+    let base = Config::load_or_default(&path)?;
+    let defaults = answers_from_config(&base);
     let answers = InitAnswers {
         install_shell_functions: prompt_bool(
             input,
@@ -76,8 +89,6 @@ fn run_init_with<R: BufRead, W: Write>(input: &mut R, output: &mut W) -> Result<
         )?,
     };
 
-    let path = default_config_path();
-    let base = Config::load_or_default(&path)?;
     config_from_answers_with_base(base, &answers).save_to(&path)?;
     writeln!(output, "Config saved to {}", path.display())?;
 
@@ -248,6 +259,32 @@ mod tests {
         assert_eq!(config.search.ignore, [".cache", "vendor"]);
         assert_eq!(config.open.editor, "hx");
         assert_eq!(config.search.roots, ["~/src"]);
+        assert_eq!(config.general.theme, ThemeName::Ink);
+        assert!(!config.general.start_from_git_root);
+        assert!(config.history.record_shell_cd);
+    }
+
+    #[test]
+    fn answers_from_config_uses_existing_wizard_values_as_defaults() {
+        let mut base = Config::default();
+        base.open.editor = "vim".to_owned();
+        base.search.roots = vec!["~/projects".to_owned()];
+        base.general.theme = ThemeName::Ink;
+        base.general.start_from_git_root = false;
+        base.history.record_shell_cd = true;
+
+        let answers = answers_from_config(&base);
+
+        assert!(answers.install_shell_functions);
+        assert!(answers.enable_cd_hook);
+        assert_eq!(answers.editor, "vim");
+        assert_eq!(answers.search_roots, ["~/projects"]);
+        assert_eq!(answers.theme, ThemeName::Ink);
+        assert!(!answers.start_from_git_root);
+
+        let config = config_from_answers_with_base(base, &answers);
+        assert_eq!(config.open.editor, "vim");
+        assert_eq!(config.search.roots, ["~/projects"]);
         assert_eq!(config.general.theme, ThemeName::Ink);
         assert!(!config.general.start_from_git_root);
         assert!(config.history.record_shell_cd);
