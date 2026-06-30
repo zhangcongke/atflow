@@ -32,9 +32,7 @@ Development install from GitHub:
 bash <(curl -fsSL https://raw.githubusercontent.com/zhangcongke/atflow/main/scripts/install.sh)
 ```
 
-The installer clones the repo, runs `cargo install --path ... --locked`, prints the installed `at` path, then runs `at init`.
-
-During MVP setup this repository is private. The raw GitHub URL and default clone URL require GitHub authentication, or they need to be replaced by a public repo or release URL later.
+The installer clones the public repo, runs `cargo install --path ... --locked`, prints the installed `at` path, then runs `at init`.
 
 Defaults:
 
@@ -49,7 +47,7 @@ ATFLOW_INSTALL_DIR="$HOME/.local/bin" \
 bash <(curl -fsSL https://raw.githubusercontent.com/zhangcongke/atflow/main/scripts/install.sh)
 ```
 
-`ATFLOW_REPO_URL` can point to an accessible fork, private clone URL, or local mirror. `ATFLOW_INSTALL_DIR` is the final directory that will contain the `at` binary, so `ATFLOW_INSTALL_DIR=/tmp/atflow-install-test` installs `/tmp/atflow-install-test/at`.
+`ATFLOW_REPO_URL` can point to an accessible fork or local mirror. `ATFLOW_INSTALL_DIR` is the final directory that will contain the `at` binary, so `ATFLOW_INSTALL_DIR=/tmp/atflow-install-test` installs `/tmp/atflow-install-test/at`.
 
 Use process substitution or download the script before running it. Avoid `curl ... | bash`: `at init` is interactive, and a pipeline leaves the installer without terminal stdin.
 
