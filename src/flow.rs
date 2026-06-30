@@ -57,16 +57,6 @@ pub fn list_entries(path: &Path) -> Result<Vec<FlowEntry>> {
     }
 
     entries.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then_with(|| a.name.cmp(&b.name)));
-    if let Some(parent) = path.parent() {
-        entries.insert(
-            0,
-            FlowEntry {
-                path: parent.to_path_buf(),
-                name: "..".to_owned(),
-                is_dir: true,
-            },
-        );
-    }
     Ok(entries)
 }
 
@@ -94,30 +84,31 @@ mod tests {
     use std::fs;
 
     #[test]
-    fn lists_parent_dirs_then_files() {
+    fn lists_dirs_then_files_without_parent_entry() {
         let dir = tempfile::tempdir().unwrap();
         fs::create_dir(dir.path().join("src")).unwrap();
         fs::write(dir.path().join("Cargo.toml"), "").unwrap();
 
         let entries = list_entries(dir.path()).unwrap();
 
-        assert_eq!(entries[0].name, "..");
-        assert_eq!(entries[1].name, "src");
-        assert!(entries[1].is_dir);
-        assert_eq!(entries[2].name, "Cargo.toml");
-        assert!(!entries[2].is_dir);
+        assert_eq!(entries[0].name, "src");
+        assert!(entries[0].is_dir);
+        assert_eq!(entries[1].name, "Cargo.toml");
+        assert!(!entries[1].is_dir);
+        assert!(!entries.iter().any(|entry| entry.name == ".."));
     }
 
     #[test]
-    fn keeps_parent_entry_first_when_child_names_sort_earlier() {
+    fn sorts_child_directories_without_injected_parent_entry() {
         let dir = tempfile::tempdir().unwrap();
         fs::create_dir(dir.path().join("!cache")).unwrap();
         fs::create_dir(dir.path().join("src")).unwrap();
 
         let entries = list_entries(dir.path()).unwrap();
 
-        assert_eq!(entries[0].name, "..");
-        assert_eq!(entries[1].name, "!cache");
+        assert_eq!(entries[0].name, "!cache");
+        assert_eq!(entries[1].name, "src");
+        assert!(!entries.iter().any(|entry| entry.name == ".."));
     }
 
     #[test]

@@ -20,7 +20,7 @@ fn main() -> Result<()> {
         Command::Recent { shell } => run_recent(shell),
         Command::Flow { shell } => run_flow(shell),
         Command::Search { shell, query } => run_search(shell, Command::search_query(&query)),
-        Command::Setting => run_setting(false),
+        Command::Setting { path } => run_setting(false, path),
         Command::Init => at::init::run_init(),
         Command::RecentRecord { path } => record_cd_hook(Path::new(&path)),
         Command::Shell { command } => match command {
@@ -52,7 +52,7 @@ fn run_menu(shell: bool) -> Result<()> {
         UiOutcome::Selected(0) => run_recent(shell),
         UiOutcome::Selected(1) => run_flow(shell),
         UiOutcome::Selected(2) => run_search(shell, None),
-        UiOutcome::Selected(3) => run_setting(shell),
+        UiOutcome::Selected(3) => run_setting(shell, false),
         _ => Ok(()),
     }
 }
@@ -337,12 +337,31 @@ fn setting_stream(shell: bool) -> InfoStream {
     }
 }
 
-fn run_setting(shell: bool) -> Result<()> {
-    match setting_stream(shell) {
-        InfoStream::Stdout => println!("{}", default_config_path().display()),
-        InfoStream::Stderr => eprintln!("{}", default_config_path().display()),
+fn run_setting(shell: bool, path_only: bool) -> Result<()> {
+    let path = default_config_path();
+    if path_only {
+        match setting_stream(shell) {
+            InfoStream::Stdout => println!("{}", path.display()),
+            InfoStream::Stderr => eprintln!("{}", path.display()),
+        }
+        return Ok(());
     }
-    Ok(())
+
+    let config = ensure_config_file(&path)?;
+    launch_opener(&config.open.editor, &path, shell)
+}
+
+fn ensure_config_file(path: &Path) -> Result<Config> {
+    if path
+        .try_exists()
+        .with_context(|| format!("failed to inspect config {}", path.display()))?
+    {
+        return Config::load_or_default(path);
+    }
+
+    let config = Config::default();
+    config.save_to(path)?;
+    Ok(config)
 }
 
 #[cfg(test)]

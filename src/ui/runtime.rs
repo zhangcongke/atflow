@@ -456,13 +456,21 @@ fn palette_rows(state: &PaletteState, area_width: usize) -> Vec<ListItem<'static
                 Span::raw(format!("{marker} ")),
                 Span::raw(label),
                 Span::styled(
-                    format!("  {}", item.source),
+                    format!("  {}", palette_row_kind_text(item)),
                     Style::default().fg(Color::DarkGray),
                 ),
             ]))
             .style(style)
         })
         .collect()
+}
+
+fn palette_row_kind_text(item: &PaletteItem) -> &str {
+    match item.kind {
+        PaletteItemKind::Menu => "menu",
+        PaletteItemKind::Dir => "dir",
+        PaletteItemKind::File => "file",
+    }
 }
 
 fn filter_label(filter: SearchFilter) -> &'static str {
@@ -510,6 +518,7 @@ mod tests {
     use crate::ui::palette::{PaletteItem, PaletteItemKind};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use std::fs;
+    use std::path::PathBuf;
 
     fn item(label: &str) -> PaletteItem {
         PaletteItem {
@@ -617,7 +626,18 @@ mod tests {
     }
 
     #[test]
-    fn flow_palette_preserves_parent_entry_label() {
+    fn palette_row_shows_item_kind_instead_of_source() {
+        let state = PaletteState::new(vec![
+            PaletteItem::dir(PathBuf::from("/tmp/project"), "flow"),
+            PaletteItem::file(PathBuf::from("/tmp/project/main.rs"), "search"),
+        ]);
+
+        assert_eq!(palette_row_kind_text(&state.items[0]), "dir");
+        assert_eq!(palette_row_kind_text(&state.items[1]), "file");
+    }
+
+    #[test]
+    fn flow_palette_omits_parent_entry() {
         let dir = tempfile::tempdir().unwrap();
         let child = dir.path().join("child");
         fs::create_dir(&child).unwrap();
@@ -625,7 +645,7 @@ mod tests {
 
         let state = flow_palette_state(&flow).unwrap();
 
-        assert_eq!(state.items[0].label, "..");
+        assert!(!state.items.iter().any(|item| item.label == ".."));
     }
 
     #[test]
@@ -633,16 +653,17 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let child = dir.path().join("src");
         fs::create_dir(&child).unwrap();
+        fs::create_dir(child.join("nested")).unwrap();
         let mut flow = FlowState::new(dir.path().to_path_buf());
         let mut state = flow_palette_state(&flow).unwrap();
-        state.selected = 1;
+        state.selected = 0;
 
         let outcome = handle_flow_key(&mut flow, &mut state, key(KeyCode::Right)).unwrap();
 
         assert_eq!(outcome, None);
         assert_eq!(flow.cwd, child);
         assert_eq!(state.selected, 0);
-        assert_eq!(state.items[0].label, "..");
+        assert_eq!(state.items[0].label, "nested");
     }
 
     #[test]
@@ -658,6 +679,7 @@ mod tests {
         assert_eq!(outcome, None);
         assert_eq!(flow.cwd, dir.path());
         assert_eq!(state.selected, 0);
+        assert_eq!(state.items[0].label, "src");
     }
 
     #[test]

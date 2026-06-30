@@ -1,6 +1,6 @@
 # Atflow
 
-Atflow is a lightweight terminal command palette for moving through projects, recent directories, and files from a Linux shell. It installs a binary named `at` and can print shell functions that make the palette feel like native commands.
+Atflow is a lightweight terminal command palette for moving through projects, recent directories, and files from a Linux shell. It installs a binary named `at` and shell shortcuts that make the palette feel like native commands.
 
 Status: MVP development preview. Linux and WSL are the first supported environments. The current focus is the Rust binary, shell integration, and local development installs; packaged installers are a long-term goal.
 
@@ -10,19 +10,20 @@ Status: MVP development preview. Linux and WSL are the first supported environme
 - `at recent`: opens recent directories.
 - `at flow`: opens the flow navigator.
 - `at search [query]`: searches files and directories, optionally starting with `query`.
-- `at setting`: prints the config file path.
+- `at setting`: opens the config file in your configured editor.
+- `at setting --path`: prints the config file path.
 - `at init`: runs the setup wizard.
 - `at shell print`: prints the shell functions.
 - `at shell hook`: prints the optional `cd` history hook.
 
-After `at init`, add the printed shell block to your shell profile to enable:
+After `at init`, restart your shell or source the generated shell integration file to enable:
 
 - `@`: main menu.
 - `@recent`: recent directories.
 - `@flow`: flow navigator.
 - `@search`: search palette.
 - `@search query`: search palette with an initial query.
-- `@setting`: print the config path.
+- `@setting`: open settings in your editor.
 
 ## Install
 
@@ -59,6 +60,8 @@ export PATH="$HOME/.local/bin:$PATH"
 
 Add that line to your shell profile if `$HOME/.local/bin` is not already present. For a custom `ATFLOW_INSTALL_DIR`, add that directory instead.
 
+`at init` writes shell shortcuts to `${XDG_CONFIG_HOME:-$HOME/.config}/at/shell.sh` and adds a source line to your shell profile (`.bashrc`, `.zshrc`, or `.profile`). The shortcuts affect the current shell only after you restart it or run the source command printed by `at init`.
+
 ## Manual Setup
 
 From a local checkout:
@@ -80,9 +83,10 @@ cargo install --path . --locked --root "$HOME/.local"
 Atflow follows the XDG directories used by the platform:
 
 - Config: `${XDG_CONFIG_HOME:-$HOME/.config}/at/config.toml`
+- Shell integration: `${XDG_CONFIG_HOME:-$HOME/.config}/at/shell.sh`
 - History: `${XDG_DATA_HOME:-$HOME/.local/share}/at/history.sqlite`
 
-`@setting` or `at setting` prints the active config path.
+`@setting` or `at setting` opens the active config file. Use `at setting --path` when you only need the path.
 
 ## MVP Behavior
 
@@ -90,7 +94,7 @@ The main `@` menu links to recent projects, flow navigation, search, and setting
 
 `@recent` shows recently opened directories from Atflow history. If the optional `cd` hook is enabled, ordinary shell `cd` usage is also recorded.
 
-`@flow` starts from the current Git root by default when one is found, otherwise from the current directory. The init wizard can disable Git-root start. Use Up/Down to move, Left/Right or `h`/`l` to navigate directories, Enter to select, Ctrl+E to open with the editor, and Ctrl+O to open with the system opener.
+`@flow` starts from the current Git root by default when one is found, otherwise from the current directory. The init wizard can disable Git-root start. Use Up/Down to move, Left or `h` to go to the parent directory, Right or `l` to enter the selected directory, Enter to select, Ctrl+E to open with the editor, and Ctrl+O to open with the system opener.
 
 `@search` searches the current directory, configured roots, and recent directories. `@search query` starts with `query` already typed; multiple words are joined with spaces. Tab cycles all, dirs, and files. Search respects git ignore files and the configured ignore names.
 
@@ -100,8 +104,8 @@ Long paths are clipped in the middle to fit the terminal row. Press Space to exp
 
 `at init` prompts for:
 
-- Whether to print shell functions for `@`, `@recent`, `@flow`, `@search`, and `@setting`.
-- Whether to print and enable the `cd` hook for shell directory history.
+- Whether to install shell shortcuts for `@`, `@recent`, `@flow`, `@search`, and `@setting`.
+- Whether to install and enable the `cd` hook for shell directory history.
 - The terminal editor command.
 - Search roots.
 - Theme.

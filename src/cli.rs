@@ -31,7 +31,10 @@ pub enum Command {
         #[arg(value_name = "QUERY")]
         query: Vec<String>,
     },
-    Setting,
+    Setting {
+        #[arg(long)]
+        path: bool,
+    },
     Init,
     RecentRecord {
         path: String,
