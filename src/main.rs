@@ -15,8 +15,8 @@ fn main() -> Result<()> {
         Command::Setting => println!("setting"),
         Command::Init => println!("init"),
         Command::Shell { command } => match command {
-            ShellCommand::Print => println!("shell print"),
-            ShellCommand::Hook => println!("shell hook"),
+            ShellCommand::Print => println!("{}", at::shell::functions_block()),
+            ShellCommand::Hook => println!("{}", at::shell::cd_hook_block()),
         },
     }
     Ok(())

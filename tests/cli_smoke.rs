@@ -21,3 +21,14 @@ fn search_accepts_optional_query() {
         .success()
         .stdout(predicates::str::contains("query=nightlight"));
 }
+
+#[test]
+fn shell_print_outputs_functions() {
+    Command::cargo_bin("at")
+        .unwrap()
+        .args(["shell", "print"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("@()"))
+        .stdout(predicates::str::contains("@search()"));
+}
