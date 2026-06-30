@@ -56,7 +56,7 @@ pub fn run_search_palette<F>(
     mut refresh: F,
 ) -> Result<UiResponse>
 where
-    F: FnMut(&str, SearchFilter) -> Vec<PaletteItem>,
+    F: FnMut(&str, SearchFilter) -> Result<Vec<PaletteItem>>,
 {
     let _session = TerminalSession::enter()?;
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
@@ -150,14 +150,14 @@ fn handle_search_key<F>(
     mut refresh: F,
 ) -> Result<Option<UiOutcome>>
 where
-    F: FnMut(&str, SearchFilter) -> Vec<PaletteItem>,
+    F: FnMut(&str, SearchFilter) -> Result<Vec<PaletteItem>>,
 {
     let outcome = match key {
         KeyEvent {
             code: KeyCode::Tab, ..
         } => {
             state.cycle_filter();
-            refresh_items(state, &mut refresh);
+            refresh_items(state, &mut refresh)?;
             None
         }
         KeyEvent {
@@ -165,7 +165,7 @@ where
             ..
         } => {
             state.query.pop();
-            refresh_items(state, &mut refresh);
+            refresh_items(state, &mut refresh)?;
             None
         }
         KeyEvent {
@@ -182,7 +182,7 @@ where
             ..
         } if is_plain_text_modifier(modifiers) => {
             state.query.push(ch);
-            refresh_items(state, &mut refresh);
+            refresh_items(state, &mut refresh)?;
             None
         }
         _ => handle_palette_key(state, key),
@@ -190,12 +190,13 @@ where
     Ok(outcome)
 }
 
-fn refresh_items<F>(state: &mut PaletteState, refresh: &mut F)
+fn refresh_items<F>(state: &mut PaletteState, refresh: &mut F) -> Result<()>
 where
-    F: FnMut(&str, SearchFilter) -> Vec<PaletteItem>,
+    F: FnMut(&str, SearchFilter) -> Result<Vec<PaletteItem>>,
 {
-    let items = refresh(&state.query, state.filter);
+    let items = refresh(&state.query, state.filter)?;
     state.replace_items(items);
+    Ok(())
 }
 
 fn is_key_press(key: KeyEvent) -> bool {
@@ -308,8 +309,12 @@ impl TerminalSession {
     fn enter() -> Result<Self> {
         enable_raw_mode()?;
         let mut stdout = io::stdout();
-        if let Err(error) = execute!(stdout, EnterAlternateScreen, Hide) {
-            let _ = disable_raw_mode();
+        if let Err(error) = execute!(stdout, EnterAlternateScreen) {
+            restore_terminal();
+            return Err(error.into());
+        }
+        if let Err(error) = execute!(stdout, Hide) {
+            restore_terminal();
             return Err(error.into());
         }
         Ok(Self)
@@ -318,10 +323,14 @@ impl TerminalSession {
 
 impl Drop for TerminalSession {
     fn drop(&mut self) {
-        let _ = disable_raw_mode();
-        let mut stdout = io::stdout();
-        let _ = execute!(stdout, Show, LeaveAlternateScreen);
+        restore_terminal();
     }
+}
+
+fn restore_terminal() {
+    let mut stdout = io::stdout();
+    let _ = execute!(stdout, Show, LeaveAlternateScreen);
+    let _ = disable_raw_mode();
 }
 
 #[cfg(test)]
@@ -343,6 +352,10 @@ mod tests {
         KeyEvent::new(code, KeyModifiers::NONE)
     }
 
+    fn ctrl_key(ch: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(ch), KeyModifiers::CONTROL)
+    }
+
     #[test]
     fn enter_on_empty_has_no_outcome() {
         let mut state = PaletteState::new(vec![]);
@@ -350,6 +363,17 @@ mod tests {
         let outcome = handle_palette_key(&mut state, key(KeyCode::Enter));
 
         assert_eq!(outcome, None);
+    }
+
+    #[test]
+    fn editor_and_system_on_empty_have_no_outcome() {
+        let mut state = PaletteState::new(vec![]);
+
+        let editor = handle_palette_key(&mut state, ctrl_key('e'));
+        let system = handle_palette_key(&mut state, ctrl_key('o'));
+
+        assert_eq!(editor, None);
+        assert_eq!(system, None);
     }
 
     #[test]
@@ -379,7 +403,7 @@ mod tests {
 
         let outcome = handle_search_key(&mut state, key(KeyCode::Char('x')), |query, filter| {
             calls.push((query.to_owned(), filter));
-            vec![item("refreshed")]
+            Ok(vec![item("refreshed")])
         })
         .unwrap();
 
@@ -397,7 +421,7 @@ mod tests {
 
         let outcome = handle_search_key(&mut state, key(KeyCode::Tab), |query, filter| {
             calls.push((query.to_owned(), filter));
-            vec![item("dirs")]
+            Ok(vec![item("dirs")])
         })
         .unwrap();
 
@@ -406,5 +430,17 @@ mod tests {
         assert_eq!(state.filter, SearchFilter::Dirs);
         assert_eq!(state.items, vec![item("dirs")]);
         assert_eq!(calls, vec![("abc".to_owned(), SearchFilter::Dirs)]);
+    }
+
+    #[test]
+    fn search_refresh_errors_are_propagated() {
+        let mut state = PaletteState::new(vec![]);
+
+        let error = handle_search_key(&mut state, key(KeyCode::Char('x')), |_query, _filter| {
+            Err(anyhow::anyhow!("search unavailable"))
+        })
+        .unwrap_err();
+
+        assert_eq!(error.to_string(), "search unavailable");
     }
 }
