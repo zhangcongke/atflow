@@ -3,6 +3,7 @@ use at::cli::{Cli, Command as CliCommand};
 use at::config::Config;
 use at::history::{HistoryDb, HistorySource, PathKind};
 use clap::Parser;
+use predicates::prelude::PredicateBooleanExt;
 use std::path::PathBuf;
 
 #[test]
@@ -51,6 +52,24 @@ fn setting_prints_config_path() {
         .assert()
         .success()
         .stdout(format!("{}\n", expected.display()));
+}
+
+#[test]
+fn init_accepts_newline_defaults_and_writes_config() {
+    let config_home = tempfile::tempdir().unwrap();
+    let config_path = config_home.path().join("at").join("config.toml");
+
+    AssertCommand::cargo_bin("at")
+        .unwrap()
+        .arg("init")
+        .env("XDG_CONFIG_HOME", config_home.path())
+        .write_stdin("\n\n\n\n\n\n")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("Atflow setup"))
+        .stdout(predicates::str::contains("_atflow_record_cd").not());
+
+    assert!(config_path.is_file());
 }
 
 #[test]
