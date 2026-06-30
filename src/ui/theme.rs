@@ -1,17 +1,12 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ThemeName {
+    #[default]
     Mist,
     Ink,
     Paper,
-}
-
-impl Default for ThemeName {
-    fn default() -> Self {
-        Self::Mist
-    }
 }
 
 impl ThemeName {
