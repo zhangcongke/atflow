@@ -1,5 +1,5 @@
-use anyhow::{Context, Result};
-use std::io::{self, Write};
+use anyhow::{Context, Result, bail};
+use std::io::{self, BufRead, Write};
 
 use crate::config::{Config, default_config_path};
 use crate::ui::theme::ThemeName;
@@ -35,7 +35,10 @@ impl Default for InitAnswers {
 }
 
 pub fn config_from_answers(answers: &InitAnswers) -> Config {
-    let mut config = Config::default();
+    config_from_answers_with_base(Config::default(), answers)
+}
+
+pub fn config_from_answers_with_base(mut config: Config, answers: &InitAnswers) -> Config {
     config.open.editor = answers.editor.clone();
     config.search.roots = answers.search_roots.clone();
     config.general.theme = answers.theme;
@@ -45,51 +48,81 @@ pub fn config_from_answers(answers: &InitAnswers) -> Config {
 }
 
 pub fn run_init() -> Result<()> {
-    println!("Atflow setup");
+    let stdin = io::stdin();
+    let stdout = io::stdout();
+    run_init_with(&mut stdin.lock(), &mut stdout.lock())
+}
+
+fn run_init_with<R: BufRead, W: Write>(input: &mut R, output: &mut W) -> Result<()> {
+    writeln!(output, "Atflow setup")?;
 
     let defaults = InitAnswers::default();
     let answers = InitAnswers {
         install_shell_functions: prompt_bool(
-            "Install shell functions",
+            input,
+            output,
+            "Print shell functions",
             defaults.install_shell_functions,
         )?,
-        enable_cd_hook: prompt_bool("Enable cd hook", defaults.enable_cd_hook)?,
-        editor: prompt_string("Editor", &defaults.editor)?,
-        search_roots: prompt_roots(&defaults.search_roots)?,
-        theme: prompt_theme(defaults.theme)?,
-        start_from_git_root: prompt_bool("Start flow from git root", defaults.start_from_git_root)?,
+        enable_cd_hook: prompt_bool(input, output, "Enable cd hook", defaults.enable_cd_hook)?,
+        editor: prompt_string(input, output, "Editor", &defaults.editor)?,
+        search_roots: prompt_roots(input, output, &defaults.search_roots)?,
+        theme: prompt_theme(input, output, defaults.theme)?,
+        start_from_git_root: prompt_bool(
+            input,
+            output,
+            "Start flow from git root",
+            defaults.start_from_git_root,
+        )?,
     };
 
-    config_from_answers(&answers).save_to(&default_config_path())?;
+    let path = default_config_path();
+    let base = Config::load_or_default(&path)?;
+    config_from_answers_with_base(base, &answers).save_to(&path)?;
+    writeln!(output, "Config saved to {}", path.display())?;
 
     if answers.install_shell_functions {
-        println!();
-        println!("{}", crate::shell::functions_block());
+        writeln!(output)?;
+        writeln!(output, "Add this to your shell profile:")?;
+        writeln!(output, "{}", crate::shell::functions_block())?;
+        writeln!(output, "Restart your shell or source your profile.")?;
     }
 
     if answers.enable_cd_hook {
-        println!();
-        println!("{}", crate::shell::cd_hook_block());
+        writeln!(output)?;
+        writeln!(output, "{}", crate::shell::cd_hook_block())?;
     }
 
     Ok(())
 }
 
-fn prompt_bool(label: &str, default: bool) -> Result<bool> {
+fn prompt_bool<R: BufRead, W: Write>(
+    input: &mut R,
+    output: &mut W,
+    label: &str,
+    default: bool,
+) -> Result<bool> {
     let suffix = if default { "Y/n" } else { "y/N" };
-    match prompt_line(&format!("{label} [{suffix}]: "))?
-        .to_lowercase()
-        .as_str()
-    {
-        "" => Ok(default),
-        "y" | "yes" => Ok(true),
-        "n" | "no" => Ok(false),
-        _ => Ok(default),
+    loop {
+        match prompt_line(input, output, &format!("{label} [{suffix}]: "))?
+            .to_lowercase()
+            .as_str()
+        {
+            "" => return Ok(default),
+            "y" | "yes" => return Ok(true),
+            "n" | "no" => return Ok(false),
+            _ => writeln!(output, "Please answer yes or no.")?,
+        }
     }
 }
 
-fn prompt_string(label: &str, default: &str) -> Result<String> {
-    let answer = prompt_line(&format!("{label} [{default}]: "))?;
+fn prompt_string<R: BufRead, W: Write>(
+    input: &mut R,
+    output: &mut W,
+    label: &str,
+    default: &str,
+) -> Result<String> {
+    let answer = prompt_line(input, output, &format!("{label} [{default}]: "))?;
     if answer.is_empty() {
         Ok(default.to_owned())
     } else {
@@ -97,9 +130,13 @@ fn prompt_string(label: &str, default: &str) -> Result<String> {
     }
 }
 
-fn prompt_roots(default: &[String]) -> Result<Vec<String>> {
+fn prompt_roots<R: BufRead, W: Write>(
+    input: &mut R,
+    output: &mut W,
+    default: &[String],
+) -> Result<Vec<String>> {
     let joined = default.join(", ");
-    let answer = prompt_line(&format!("Search roots [{joined}]: "))?;
+    let answer = prompt_line(input, output, &format!("Search roots [{joined}]: "))?;
     if answer.is_empty() {
         return Ok(default.to_vec());
     }
@@ -112,39 +149,57 @@ fn prompt_roots(default: &[String]) -> Result<Vec<String>> {
         .collect())
 }
 
-fn prompt_theme(default: ThemeName) -> Result<ThemeName> {
+fn prompt_theme<R: BufRead, W: Write>(
+    input: &mut R,
+    output: &mut W,
+    default: ThemeName,
+) -> Result<ThemeName> {
     let default_number = match default {
         ThemeName::Mist => 1,
         ThemeName::Ink => 2,
         ThemeName::Paper => 3,
     };
-    match prompt_line(&format!(
-        "Theme 1) Mist 2) Ink 3) Paper [{default_number}]: "
-    ))?
-    .as_str()
-    {
-        "" => Ok(default),
-        "1" => Ok(ThemeName::Mist),
-        "2" => Ok(ThemeName::Ink),
-        "3" => Ok(ThemeName::Paper),
-        _ => Ok(default),
+
+    loop {
+        match prompt_line(
+            input,
+            output,
+            &format!("Theme 1) Mist 2) Ink 3) Paper [{default_number}]: "),
+        )?
+        .as_str()
+        {
+            "" => return Ok(default),
+            "1" => return Ok(ThemeName::Mist),
+            "2" => return Ok(ThemeName::Ink),
+            "3" => return Ok(ThemeName::Paper),
+            _ => writeln!(output, "Please choose 1, 2, or 3.")?,
+        }
     }
 }
 
-fn prompt_line(prompt: &str) -> Result<String> {
-    print!("{prompt}");
-    io::stdout().flush().context("failed to flush prompt")?;
+fn prompt_line<R: BufRead, W: Write>(
+    input: &mut R,
+    output: &mut W,
+    prompt: &str,
+) -> Result<String> {
+    write!(output, "{prompt}")?;
+    output.flush().context("failed to flush prompt")?;
 
     let mut answer = String::new();
-    io::stdin()
+    let bytes = input
         .read_line(&mut answer)
         .context("failed to read prompt")?;
+    if bytes == 0 {
+        bail!("no input provided for init prompt");
+    }
+
     Ok(answer.trim().to_owned())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Cursor;
 
     #[test]
     fn config_from_answers_updates_wizard_fields() {
@@ -166,5 +221,75 @@ mod tests {
         assert!(config.history.record_shell_cd);
         assert_eq!(config.open.gui_editor, "code");
         assert!(config.history.record_atflow_opens);
+    }
+
+    #[test]
+    fn config_from_answers_with_base_preserves_unowned_fields() {
+        let mut base = Config::default();
+        base.general.max_recent = 42;
+        base.open.gui_editor = "zed".to_owned();
+        base.open.file_opener = "gio open".to_owned();
+        base.search.ignore = vec![".cache".to_owned(), "vendor".to_owned()];
+
+        let answers = InitAnswers {
+            install_shell_functions: true,
+            enable_cd_hook: true,
+            editor: "hx".to_owned(),
+            search_roots: vec!["~/src".to_owned()],
+            theme: ThemeName::Ink,
+            start_from_git_root: false,
+        };
+
+        let config = config_from_answers_with_base(base, &answers);
+
+        assert_eq!(config.general.max_recent, 42);
+        assert_eq!(config.open.gui_editor, "zed");
+        assert_eq!(config.open.file_opener, "gio open");
+        assert_eq!(config.search.ignore, [".cache", "vendor"]);
+        assert_eq!(config.open.editor, "hx");
+        assert_eq!(config.search.roots, ["~/src"]);
+        assert_eq!(config.general.theme, ThemeName::Ink);
+        assert!(!config.general.start_from_git_root);
+        assert!(config.history.record_shell_cd);
+    }
+
+    #[test]
+    fn prompt_line_errors_on_eof() {
+        let mut input = Cursor::new("");
+        let mut output = Vec::new();
+
+        let error = prompt_line(&mut input, &mut output, "Editor [nvim]: ").unwrap_err();
+
+        assert!(error.to_string().contains("no input"));
+    }
+
+    #[test]
+    fn prompt_bool_reprompts_after_invalid_input() {
+        let mut input = Cursor::new("maybe\nyes\n");
+        let mut output = Vec::new();
+
+        let answer = prompt_bool(&mut input, &mut output, "Print shell functions", false).unwrap();
+
+        assert!(answer);
+        assert!(
+            String::from_utf8(output)
+                .unwrap()
+                .contains("Please answer yes or no.")
+        );
+    }
+
+    #[test]
+    fn prompt_theme_reprompts_after_invalid_input() {
+        let mut input = Cursor::new("mist\n2\n");
+        let mut output = Vec::new();
+
+        let theme = prompt_theme(&mut input, &mut output, ThemeName::Mist).unwrap();
+
+        assert_eq!(theme, ThemeName::Ink);
+        assert!(
+            String::from_utf8(output)
+                .unwrap()
+                .contains("Please choose 1, 2, or 3.")
+        );
     }
 }

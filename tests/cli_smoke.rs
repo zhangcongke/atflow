@@ -2,6 +2,7 @@ use assert_cmd::Command as AssertCommand;
 use at::cli::{Cli, Command as CliCommand};
 use at::config::Config;
 use at::history::{HistoryDb, HistorySource, PathKind};
+use at::ui::theme::ThemeName;
 use clap::Parser;
 use predicates::prelude::PredicateBooleanExt;
 use std::path::PathBuf;
@@ -63,13 +64,44 @@ fn init_accepts_newline_defaults_and_writes_config() {
         .unwrap()
         .arg("init")
         .env("XDG_CONFIG_HOME", config_home.path())
+        .env_remove("EDITOR")
         .write_stdin("\n\n\n\n\n\n")
         .assert()
         .success()
         .stdout(predicates::str::contains("Atflow setup"))
+        .stdout(predicates::str::contains("Print shell functions"))
+        .stdout(predicates::str::contains(format!(
+            "Config saved to {}",
+            config_path.display()
+        )))
+        .stdout(predicates::str::contains("Add this to your shell profile"))
         .stdout(predicates::str::contains("_atflow_record_cd").not());
 
     assert!(config_path.is_file());
+
+    let config = Config::load_or_default(&config_path).unwrap();
+    assert!(!config.history.record_shell_cd);
+    assert!(config.general.start_from_git_root);
+    assert_eq!(config.general.theme, ThemeName::Mist);
+    assert_eq!(config.open.editor, "nvim");
+    assert_eq!(config.search.roots, ["~/work", "~/code", "~/Documents"]);
+}
+
+#[test]
+fn init_empty_stdin_fails_without_writing_config() {
+    let config_home = tempfile::tempdir().unwrap();
+    let config_path = config_home.path().join("at").join("config.toml");
+
+    AssertCommand::cargo_bin("at")
+        .unwrap()
+        .arg("init")
+        .env("XDG_CONFIG_HOME", config_home.path())
+        .write_stdin("")
+        .assert()
+        .failure()
+        .stdout(predicates::str::contains("@()").not());
+
+    assert!(!config_path.exists());
 }
 
 #[test]
