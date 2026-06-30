@@ -1,7 +1,11 @@
 use clap::{Parser, Subcommand};
 
 #[derive(Debug, Parser)]
-#[command(name = "at", version, about = "A lightweight @ command palette for Linux terminals")]
+#[command(
+    name = "at",
+    version,
+    about = "A lightweight @ command palette for Linux terminals"
+)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Command>,
