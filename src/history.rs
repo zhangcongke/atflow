@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
+use std::convert::Infallible;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -37,12 +38,23 @@ impl PathKind {
         }
     }
 
-    #[allow(clippy::should_implement_trait)]
+    #[expect(
+        clippy::should_implement_trait,
+        reason = "spec requires an infallible inherent wrapper"
+    )]
     pub fn from_str(value: &str) -> Self {
-        match value {
+        value.parse().unwrap_or(Self::Dir)
+    }
+}
+
+impl std::str::FromStr for PathKind {
+    type Err = Infallible;
+
+    fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
+        Ok(match value {
             "file" => Self::File,
             _ => Self::Dir,
-        }
+        })
     }
 }
 
@@ -55,13 +67,24 @@ impl HistorySource {
         }
     }
 
-    #[allow(clippy::should_implement_trait)]
+    #[expect(
+        clippy::should_implement_trait,
+        reason = "spec requires an infallible inherent wrapper"
+    )]
     pub fn from_str(value: &str) -> Self {
-        match value {
+        value.parse().unwrap_or(Self::Atflow)
+    }
+}
+
+impl std::str::FromStr for HistorySource {
+    type Err = Infallible;
+
+    fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
+        Ok(match value {
             "shell_cd_hook" => Self::ShellCdHook,
             "manual_root_scan" => Self::ManualRootScan,
             _ => Self::Atflow,
-        }
+        })
     }
 }
 
@@ -87,8 +110,9 @@ impl HistoryDb {
     }
 
     fn migrate(&self) -> Result<()> {
-        self.conn.execute_batch(
-            r#"
+        self.conn
+            .execute_batch(
+                r#"
             CREATE TABLE IF NOT EXISTS paths (
               id INTEGER PRIMARY KEY,
               path TEXT NOT NULL UNIQUE,
@@ -101,7 +125,8 @@ impl HistoryDb {
             CREATE INDEX IF NOT EXISTS idx_paths_last_opened ON paths(last_opened_at DESC);
             CREATE INDEX IF NOT EXISTS idx_paths_kind ON paths(kind);
             "#,
-        )?;
+            )
+            .context("failed to migrate history database")?;
         Ok(())
     }
 
@@ -112,8 +137,10 @@ impl HistoryDb {
         source: HistorySource,
         timestamp: i64,
     ) -> Result<()> {
-        self.conn.execute(
-            r#"
+        let path_text = path.display().to_string();
+        self.conn
+            .execute(
+                r#"
             INSERT INTO paths (path, kind, source, last_opened_at, open_count)
             VALUES (?1, ?2, ?3, ?4, 1)
             ON CONFLICT(path) DO UPDATE SET
@@ -122,13 +149,9 @@ impl HistoryDb {
               last_opened_at = excluded.last_opened_at,
               open_count = paths.open_count + 1
             "#,
-            params![
-                path.display().to_string(),
-                kind.as_str(),
-                source.as_str(),
-                timestamp
-            ],
-        )?;
+                params![&path_text, kind.as_str(), source.as_str(), timestamp],
+            )
+            .with_context(|| format!("failed to record history path {path_text}"))?;
         Ok(())
     }
 
@@ -228,6 +251,39 @@ mod tests {
     }
 
     #[test]
+    fn sorts_tied_timestamps_by_open_count() {
+        let db = HistoryDb::open_memory().unwrap();
+        db.record_path_at(
+            Path::new("/tmp/less-opened"),
+            PathKind::Dir,
+            HistorySource::Atflow,
+            500,
+        )
+        .unwrap();
+        db.record_path_at(
+            Path::new("/tmp/more-opened"),
+            PathKind::Dir,
+            HistorySource::Atflow,
+            100,
+        )
+        .unwrap();
+        db.record_path_at(
+            Path::new("/tmp/more-opened"),
+            PathKind::Dir,
+            HistorySource::ShellCdHook,
+            500,
+        )
+        .unwrap();
+
+        let recent = db.recent_dirs(10).unwrap();
+
+        assert_eq!(recent[0].path, PathBuf::from("/tmp/more-opened"));
+        assert_eq!(recent[0].open_count, 2);
+        assert_eq!(recent[1].path, PathBuf::from("/tmp/less-opened"));
+        assert_eq!(recent[1].open_count, 1);
+    }
+
+    #[test]
     fn conversion_methods_use_spec_names() {
         assert_eq!(PathKind::from_str("file"), PathKind::File);
         assert_eq!(PathKind::from_str("dir"), PathKind::Dir);
@@ -240,5 +296,23 @@ mod tests {
             HistorySource::ManualRootScan
         );
         assert_eq!(HistorySource::from_str("unknown"), HistorySource::Atflow);
+    }
+
+    #[test]
+    fn conversion_types_implement_from_str_trait() {
+        assert_eq!("file".parse::<PathKind>().unwrap(), PathKind::File);
+        assert_eq!("dir".parse::<PathKind>().unwrap(), PathKind::Dir);
+        assert_eq!(
+            "shell_cd_hook".parse::<HistorySource>().unwrap(),
+            HistorySource::ShellCdHook
+        );
+        assert_eq!(
+            "manual_root_scan".parse::<HistorySource>().unwrap(),
+            HistorySource::ManualRootScan
+        );
+        assert_eq!(
+            "unknown".parse::<HistorySource>().unwrap(),
+            HistorySource::Atflow
+        );
     }
 }
