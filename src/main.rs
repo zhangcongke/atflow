@@ -8,7 +8,9 @@ use at::ui::palette::{PaletteItem, PaletteItemKind, PaletteState};
 use at::ui::runtime::{UiOutcome, run_flow_palette, run_palette, run_search_palette};
 use clap::Parser;
 use std::collections::HashSet;
+use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -93,13 +95,21 @@ fn run_search(shell: bool, query: Option<String>) -> Result<()> {
 }
 
 fn search_roots(config: &Config) -> Result<Vec<PathBuf>> {
-    let db = HistoryDb::open(&default_history_path())?;
-    let recent = db
-        .recent_dirs(config.general.max_recent)?
-        .into_iter()
-        .map(|entry| entry.path)
-        .collect();
+    let recent = recent_roots_from_history(&default_history_path(), config.general.max_recent)?;
     Ok(search_roots_from(config, std::env::current_dir()?, recent))
+}
+
+fn recent_roots_from_history(path: &Path, limit: usize) -> Result<Vec<PathBuf>> {
+    if !path
+        .try_exists()
+        .with_context(|| format!("failed to inspect history database {}", path.display()))?
+    {
+        return Ok(Vec::new());
+    }
+
+    let db = HistoryDb::open(path)?;
+    db.recent_dirs(limit)
+        .map(|entries| entries.into_iter().map(|entry| entry.path).collect())
 }
 
 fn search_roots_from(
@@ -210,21 +220,58 @@ fn run_open_action(
             }
         }
         OpenAction::Editor { command, path } | OpenAction::System { command, path } => {
-            launch_opener(&command, &path)?;
+            launch_opener(&command, &path, shell)?;
             record_atflow_open(&path, PathKind::File, config)?;
         }
     }
     Ok(())
 }
 
-fn launch_opener(command: &str, path: &Path) -> Result<()> {
-    let status = std::process::Command::new(command)
-        .arg(path)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OpenerStdio {
+    Inherit,
+    Tty,
+}
+
+fn opener_stdio(shell: bool) -> OpenerStdio {
+    if shell {
+        OpenerStdio::Tty
+    } else {
+        OpenerStdio::Inherit
+    }
+}
+
+fn launch_opener(command: &str, path: &Path, shell: bool) -> Result<()> {
+    let mut opener = std::process::Command::new(command);
+    opener.arg(path);
+    if opener_stdio(shell) == OpenerStdio::Tty {
+        attach_tty_stdio(&mut opener)?;
+    }
+
+    let status = opener
         .status()
         .with_context(|| format!("failed to launch opener `{command}`"))?;
     if !status.success() {
         bail!("opener `{command}` exited with {status}");
     }
+    Ok(())
+}
+
+fn attach_tty_stdio(command: &mut std::process::Command) -> Result<()> {
+    let tty = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/tty")
+        .context("failed to open /dev/tty for shell-mode opener")?;
+    command.stdin(Stdio::from(
+        tty.try_clone()
+            .context("failed to clone /dev/tty for opener stdin")?,
+    ));
+    command.stdout(Stdio::from(
+        tty.try_clone()
+            .context("failed to clone /dev/tty for opener stdout")?,
+    ));
+    command.stderr(Stdio::from(tty));
     Ok(())
 }
 
@@ -400,9 +447,28 @@ mod tests {
 
     #[test]
     fn launch_opener_reports_nonzero_exit() {
-        let error = launch_opener("false", Path::new("/tmp/atflow-opener-test")).unwrap_err();
+        let error =
+            launch_opener("false", Path::new("/tmp/atflow-opener-test"), false).unwrap_err();
 
         assert!(error.to_string().contains("opener `false` exited"));
+    }
+
+    #[test]
+    fn shell_mode_openers_use_tty_stdio() {
+        assert_eq!(opener_stdio(false), OpenerStdio::Inherit);
+        assert_eq!(opener_stdio(true), OpenerStdio::Tty);
+    }
+
+    #[test]
+    fn missing_history_db_returns_no_recent_roots_without_creating_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let history_path = dir.path().join("missing").join("history.sqlite");
+
+        let roots = recent_roots_from_history(&history_path, 100).unwrap();
+
+        assert!(roots.is_empty());
+        assert!(!history_path.exists());
+        assert!(!history_path.parent().unwrap().exists());
     }
 
     #[test]

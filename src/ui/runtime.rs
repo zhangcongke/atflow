@@ -83,7 +83,8 @@ pub fn run_flow_palette(title: &str, mut flow: FlowState) -> Result<UiResponse> 
     let mut state = flow_palette_state(&flow)?;
 
     loop {
-        terminal.draw(|frame| render_palette(frame, title, &state))?;
+        terminal
+            .draw(|frame| render_palette_with_footer(frame, title, &state, flow_footer_text()))?;
         if let Event::Key(key) = event::read()? {
             if !is_key_press(key) {
                 continue;
@@ -365,6 +366,15 @@ fn is_plain_text_modifier(modifiers: KeyModifiers) -> bool {
 }
 
 fn render_palette(frame: &mut Frame<'_>, title: &str, state: &PaletteState) {
+    render_palette_with_footer(frame, title, state, default_footer_text());
+}
+
+fn render_palette_with_footer(
+    frame: &mut Frame<'_>,
+    title: &str,
+    state: &PaletteState,
+    footer_text: &'static str,
+) {
     let area = frame.area();
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -402,15 +412,18 @@ fn render_palette(frame: &mut Frame<'_>, title: &str, state: &PaletteState) {
         chunks[1],
     );
 
-    let footer = Line::from(vec![
-        Span::raw("Esc cancel  Enter select  "),
-        Span::raw("Up/Down move  Space expand  "),
-        Span::raw("Tab filter  Ctrl+E editor  Ctrl+O system"),
-    ]);
     frame.render_widget(
-        Paragraph::new(footer).block(Block::default().borders(Borders::ALL)),
+        Paragraph::new(footer_text).block(Block::default().borders(Borders::ALL)),
         chunks[2],
     );
+}
+
+fn default_footer_text() -> &'static str {
+    "Esc cancel  Enter select  Up/Down move  Space expand  Tab filter  Ctrl+E editor  Ctrl+O system"
+}
+
+fn flow_footer_text() -> &'static str {
+    "Esc cancel  Enter select  Up/Down move  Left/Right or h/l navigate  Space expand  Ctrl+E editor  Ctrl+O system"
 }
 
 fn palette_rows(state: &PaletteState, area_width: usize) -> Vec<ListItem<'static>> {
@@ -645,5 +658,14 @@ mod tests {
         assert_eq!(outcome, None);
         assert_eq!(flow.cwd, dir.path());
         assert_eq!(state.selected, 0);
+    }
+
+    #[test]
+    fn flow_footer_mentions_navigation_keys() {
+        let footer = flow_footer_text();
+
+        assert!(footer.contains("Left/Right"));
+        assert!(footer.contains("h/l"));
+        assert!(!footer.contains("Tab filter"));
     }
 }
