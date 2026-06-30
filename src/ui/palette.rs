@@ -92,12 +92,7 @@ impl PaletteState {
     }
 
     pub fn display_label(&self, item: &PaletteItem, width: usize) -> String {
-        if let Some(index) = self.items.iter().position(|candidate| candidate == item) {
-            self.display_label_at(index, width)
-                .unwrap_or_else(|| format_item_label(item, false, width))
-        } else {
-            format_item_label(item, false, width)
-        }
+        format_item_label(item, false, width)
     }
 }
 
@@ -230,6 +225,20 @@ mod tests {
         assert_eq!(
             state.display_label_at(1, 18).unwrap(),
             display_path(&PathBuf::from(other_path), false, 18)
+        );
+    }
+
+    #[test]
+    fn display_label_does_not_expand_equal_non_selected_duplicates() {
+        let path = "/home/congke/work/at-flow/src/ui/palette.rs";
+        let item = path_item("palette", path, PaletteItemKind::File);
+        let mut state = PaletteState::new(vec![item.clone(), item]);
+
+        state.toggle_expanded();
+
+        assert_eq!(
+            state.display_label(&state.items[1], 18),
+            display_path(&PathBuf::from(path), false, 18)
         );
     }
 
