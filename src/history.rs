@@ -37,7 +37,8 @@ impl PathKind {
         }
     }
 
-    pub fn from_db_value(value: &str) -> Self {
+    #[allow(clippy::should_implement_trait)]
+    pub fn from_str(value: &str) -> Self {
         match value {
             "file" => Self::File,
             _ => Self::Dir,
@@ -54,7 +55,8 @@ impl HistorySource {
         }
     }
 
-    pub fn from_db_value(value: &str) -> Self {
+    #[allow(clippy::should_implement_trait)]
+    pub fn from_str(value: &str) -> Self {
         match value {
             "shell_cd_hook" => Self::ShellCdHook,
             "manual_root_scan" => Self::ManualRootScan,
@@ -143,8 +145,8 @@ impl HistoryDb {
         let rows = stmt.query_map([limit as i64], |row| {
             Ok(HistoryEntry {
                 path: PathBuf::from(row.get::<_, String>(0)?),
-                kind: PathKind::from_db_value(&row.get::<_, String>(1)?),
-                source: HistorySource::from_db_value(&row.get::<_, String>(2)?),
+                kind: PathKind::from_str(&row.get::<_, String>(1)?),
+                source: HistorySource::from_str(&row.get::<_, String>(2)?),
                 last_opened_at: row.get(3)?,
                 open_count: row.get(4)?,
             })
@@ -223,5 +225,20 @@ mod tests {
         assert_eq!(recent[0].last_opened_at, 300);
         assert_eq!(recent[0].open_count, 2);
         assert_eq!(recent[0].source, HistorySource::ShellCdHook);
+    }
+
+    #[test]
+    fn conversion_methods_use_spec_names() {
+        assert_eq!(PathKind::from_str("file"), PathKind::File);
+        assert_eq!(PathKind::from_str("dir"), PathKind::Dir);
+        assert_eq!(
+            HistorySource::from_str("shell_cd_hook"),
+            HistorySource::ShellCdHook
+        );
+        assert_eq!(
+            HistorySource::from_str("manual_root_scan"),
+            HistorySource::ManualRootScan
+        );
+        assert_eq!(HistorySource::from_str("unknown"), HistorySource::Atflow);
     }
 }
