@@ -1,6 +1,6 @@
 use crate::path_display::display_path;
 use crate::search::SearchFilter;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PaletteItemKind {
@@ -15,6 +15,41 @@ pub struct PaletteItem {
     pub path: Option<PathBuf>,
     pub kind: PaletteItemKind,
     pub source: String,
+}
+
+impl PaletteItem {
+    pub fn dir(path: PathBuf, source: impl Into<String>) -> Self {
+        Self {
+            label: path_label(&path),
+            path: Some(path),
+            kind: PaletteItemKind::Dir,
+            source: source.into(),
+        }
+    }
+
+    pub fn file(path: PathBuf, source: impl Into<String>) -> Self {
+        Self {
+            label: path_label(&path),
+            path: Some(path),
+            kind: PaletteItemKind::File,
+            source: source.into(),
+        }
+    }
+
+    pub fn menu(label: impl Into<String>) -> Self {
+        Self {
+            label: label.into(),
+            path: None,
+            kind: PaletteItemKind::Menu,
+            source: "menu".to_owned(),
+        }
+    }
+}
+
+fn path_label(path: &Path) -> String {
+    path.file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.display().to_string())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -247,6 +282,44 @@ mod tests {
         let state = PaletteState::new(vec![menu_item("Open settings")]);
 
         assert_eq!(state.display_label_at(0, 3).unwrap(), "Open settings");
+    }
+
+    #[test]
+    fn constructors_use_file_name_labels_for_paths() {
+        let dir_path = PathBuf::from("/tmp/at-flow");
+        let file_path = PathBuf::from("/tmp/at-flow/src/main.rs");
+
+        let dir = PaletteItem::dir(dir_path.clone(), "recent");
+        let file = PaletteItem::file(file_path.clone(), "search");
+
+        assert_eq!(dir.label, "at-flow");
+        assert_eq!(dir.path, Some(dir_path));
+        assert_eq!(dir.kind, PaletteItemKind::Dir);
+        assert_eq!(dir.source, "recent");
+        assert_eq!(file.label, "main.rs");
+        assert_eq!(file.path, Some(file_path));
+        assert_eq!(file.kind, PaletteItemKind::File);
+        assert_eq!(file.source, "search");
+    }
+
+    #[test]
+    fn path_constructors_fall_back_to_path_string_for_labels() {
+        let path = PathBuf::from("/");
+
+        let item = PaletteItem::dir(path.clone(), "root");
+
+        assert_eq!(item.label, path.display().to_string());
+        assert_eq!(item.path, Some(path));
+    }
+
+    #[test]
+    fn menu_constructor_builds_non_path_item() {
+        let item = PaletteItem::menu("Settings");
+
+        assert_eq!(item.label, "Settings");
+        assert_eq!(item.path, None);
+        assert_eq!(item.kind, PaletteItemKind::Menu);
+        assert_eq!(item.source, "menu");
     }
 
     #[test]

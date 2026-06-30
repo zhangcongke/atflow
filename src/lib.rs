@@ -2,6 +2,7 @@ pub mod cli;
 pub mod config;
 pub mod flow;
 pub mod history;
+pub mod init;
 pub mod open;
 pub mod path_display;
 pub mod search;

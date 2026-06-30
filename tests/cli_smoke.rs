@@ -1,10 +1,12 @@
-use assert_cmd::Command;
+use assert_cmd::Command as AssertCommand;
+use at::cli::{Cli, Command as CliCommand};
 use at::history::{HistoryDb, HistorySource, PathKind};
+use clap::Parser;
 use std::path::PathBuf;
 
 #[test]
 fn help_mentions_core_commands() {
-    Command::cargo_bin("at")
+    AssertCommand::cargo_bin("at")
         .unwrap()
         .arg("--help")
         .assert()
@@ -15,18 +17,44 @@ fn help_mentions_core_commands() {
 }
 
 #[test]
-fn search_accepts_optional_query() {
-    Command::cargo_bin("at")
+fn search_accepts_optional_query_without_launching_tui() {
+    let cli = Cli::try_parse_from(["at", "search", "--shell", "nightlight", "loader"]).unwrap();
+    let Some(CliCommand::Search { shell, query }) = cli.command else {
+        panic!("expected search command");
+    };
+
+    assert!(shell);
+    assert_eq!(
+        CliCommand::search_query(&query).as_deref(),
+        Some("nightlight loader")
+    );
+
+    let cli = Cli::try_parse_from(["at", "search"]).unwrap();
+    let Some(CliCommand::Search { shell, query }) = cli.command else {
+        panic!("expected search command");
+    };
+
+    assert!(!shell);
+    assert_eq!(CliCommand::search_query(&query), None);
+}
+
+#[test]
+fn setting_prints_config_path() {
+    let config_home = tempfile::tempdir().unwrap();
+    let expected = config_home.path().join("at").join("config.toml");
+
+    AssertCommand::cargo_bin("at")
         .unwrap()
-        .args(["search", "--shell", "nightlight"])
+        .arg("setting")
+        .env("XDG_CONFIG_HOME", config_home.path())
         .assert()
         .success()
-        .stdout(predicates::str::contains("query=nightlight"));
+        .stdout(format!("{}\n", expected.display()));
 }
 
 #[test]
 fn shell_print_outputs_functions() {
-    Command::cargo_bin("at")
+    AssertCommand::cargo_bin("at")
         .unwrap()
         .args(["shell", "print"])
         .assert()
@@ -37,7 +65,7 @@ fn shell_print_outputs_functions() {
 
 #[test]
 fn shell_hook_outputs_cd_recorder() {
-    Command::cargo_bin("at")
+    AssertCommand::cargo_bin("at")
         .unwrap()
         .args(["shell", "hook"])
         .assert()
@@ -52,7 +80,7 @@ fn recent_record_writes_shell_cd_history() {
     let recorded_path = PathBuf::from("/tmp/atflow-cli-smoke");
     let db_path = data_home.path().join("at").join("history.sqlite");
 
-    Command::cargo_bin("at")
+    AssertCommand::cargo_bin("at")
         .unwrap()
         .args(["recent-record", recorded_path.to_str().unwrap()])
         .env("XDG_DATA_HOME", data_home.path())
