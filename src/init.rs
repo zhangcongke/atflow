@@ -68,8 +68,19 @@ fn run_init_with<R: BufRead, W: Write>(input: &mut R, output: &mut W) -> Result<
     writeln!(output, "Atflow setup")?;
 
     let path = default_config_path();
-    let base = Config::load_or_default(&path)?;
-    let defaults = answers_from_config(&base);
+    let has_config = path
+        .try_exists()
+        .with_context(|| format!("failed to inspect config {}", path.display()))?;
+    let base = if has_config {
+        Config::load_or_default(&path)?
+    } else {
+        Config::default()
+    };
+    let defaults = if has_config {
+        answers_from_config(&base)
+    } else {
+        InitAnswers::default()
+    };
     let answers = InitAnswers {
         install_shell_functions: prompt_bool(
             input,
@@ -96,12 +107,16 @@ fn run_init_with<R: BufRead, W: Write>(input: &mut R, output: &mut W) -> Result<
         writeln!(output)?;
         writeln!(output, "Add this to your shell profile:")?;
         writeln!(output, "{}", crate::shell::functions_block())?;
-        writeln!(output, "Restart your shell or source your profile.")?;
     }
 
     if answers.enable_cd_hook {
         writeln!(output)?;
+        writeln!(output, "Add this cd hook to your shell profile:")?;
         writeln!(output, "{}", crate::shell::cd_hook_block())?;
+    }
+
+    if answers.install_shell_functions || answers.enable_cd_hook {
+        writeln!(output, "Restart your shell or source your profile.")?;
     }
 
     Ok(())

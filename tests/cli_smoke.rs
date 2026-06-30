@@ -88,6 +88,46 @@ fn init_accepts_newline_defaults_and_writes_config() {
 }
 
 #[test]
+fn init_fresh_config_uses_editor_env_default() {
+    let config_home = tempfile::tempdir().unwrap();
+    let config_path = config_home.path().join("at").join("config.toml");
+
+    AssertCommand::cargo_bin("at")
+        .unwrap()
+        .arg("init")
+        .env("XDG_CONFIG_HOME", config_home.path())
+        .env("EDITOR", "hx")
+        .write_stdin("\n\n\n\n\n\n")
+        .assert()
+        .success();
+
+    let config = Config::load_or_default(&config_path).unwrap();
+    assert_eq!(config.open.editor, "hx");
+}
+
+#[test]
+fn init_cd_hook_only_prints_hook_guidance_and_saves_cd_history() {
+    let config_home = tempfile::tempdir().unwrap();
+    let config_path = config_home.path().join("at").join("config.toml");
+
+    AssertCommand::cargo_bin("at")
+        .unwrap()
+        .arg("init")
+        .env("XDG_CONFIG_HOME", config_home.path())
+        .write_stdin("n\ny\n\n\n\n\n")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("@()").not())
+        .stdout(predicates::str::contains(
+            "Add this cd hook to your shell profile:",
+        ))
+        .stdout(predicates::str::contains("_atflow_record_cd"));
+
+    let config = Config::load_or_default(&config_path).unwrap();
+    assert!(config.history.record_shell_cd);
+}
+
+#[test]
 fn init_empty_stdin_fails_without_writing_config() {
     let config_home = tempfile::tempdir().unwrap();
     let config_path = config_home.path().join("at").join("config.toml");
