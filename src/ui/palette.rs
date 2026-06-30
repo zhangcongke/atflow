@@ -37,26 +37,31 @@ impl PaletteState {
         }
     }
 
+    pub fn selected_index(&self) -> Option<usize> {
+        if self.items.is_empty() {
+            None
+        } else {
+            Some(self.selected.min(self.items.len() - 1))
+        }
+    }
+
     pub fn selected_item(&self) -> Option<&PaletteItem> {
-        self.items.get(self.selected)
+        self.selected_index()
+            .and_then(|index| self.items.get(index))
     }
 
     pub fn move_down(&mut self) {
-        if self.items.is_empty() {
-            return;
+        if let Some(selected) = self.selected_index() {
+            self.selected = selected.saturating_add(1).min(self.items.len() - 1);
+            self.expanded = false;
         }
-
-        self.selected = self.selected.saturating_add(1).min(self.items.len() - 1);
-        self.expanded = false;
     }
 
     pub fn move_up(&mut self) {
-        if self.items.is_empty() {
-            return;
+        if let Some(selected) = self.selected_index() {
+            self.selected = selected.saturating_sub(1);
+            self.expanded = false;
         }
-
-        self.selected = self.selected.saturating_sub(1);
-        self.expanded = false;
     }
 
     pub fn toggle_expanded(&mut self) {
@@ -77,17 +82,29 @@ impl PaletteState {
         self.expanded = false;
     }
 
+    pub fn display_label_at(&self, index: usize, width: usize) -> Option<String> {
+        let item = self.items.get(index)?;
+        Some(format_item_label(
+            item,
+            self.expanded && Some(index) == self.selected_index(),
+            width,
+        ))
+    }
+
     pub fn display_label(&self, item: &PaletteItem, width: usize) -> String {
-        match &item.path {
-            Some(path) => {
-                let expanded = self.expanded
-                    && self
-                        .selected_item()
-                        .is_some_and(|selected| std::ptr::eq(selected, item));
-                display_path(path, expanded, width)
-            }
-            None => item.label.clone(),
+        if let Some(index) = self.items.iter().position(|candidate| candidate == item) {
+            self.display_label_at(index, width)
+                .unwrap_or_else(|| format_item_label(item, false, width))
+        } else {
+            format_item_label(item, false, width)
         }
+    }
+}
+
+fn format_item_label(item: &PaletteItem, expanded: bool, width: usize) -> String {
+    match &item.path {
+        Some(path) => display_path(path, expanded, width),
+        None => item.label.clone(),
     }
 }
 
@@ -119,9 +136,18 @@ mod tests {
 
         assert_eq!(state.query, "");
         assert_eq!(state.selected, 0);
+        assert_eq!(state.selected_index(), Some(0));
         assert!(!state.expanded);
         assert_eq!(state.filter, SearchFilter::All);
         assert_eq!(state.selected_item().unwrap().label, "Open settings");
+    }
+
+    #[test]
+    fn empty_palette_has_no_selected_index() {
+        let state = PaletteState::new(vec![]);
+
+        assert_eq!(state.selected_index(), None);
+        assert_eq!(state.selected_item(), None);
     }
 
     #[test]
@@ -171,8 +197,22 @@ mod tests {
         state.toggle_expanded();
 
         assert_eq!(
-            state.display_label(&state.items[0], 18),
+            state.display_label_at(0, 18).unwrap(),
             display_path(&PathBuf::from(path), true, 18)
+        );
+    }
+
+    #[test]
+    fn index_based_display_does_not_need_item_pointer_identity() {
+        let path = "/home/congke/work/at-flow/src/ui/palette.rs";
+        let mut state = PaletteState::new(vec![path_item("palette", path, PaletteItemKind::File)]);
+        let cloned_item = state.items[0].clone();
+
+        state.toggle_expanded();
+
+        assert_eq!(
+            state.display_label_at(0, 18).unwrap(),
+            display_path(cloned_item.path.as_ref().unwrap(), true, 18)
         );
     }
 
@@ -188,7 +228,7 @@ mod tests {
         state.toggle_expanded();
 
         assert_eq!(
-            state.display_label(&state.items[1], 18),
+            state.display_label_at(1, 18).unwrap(),
             display_path(&PathBuf::from(other_path), false, 18)
         );
     }
@@ -197,7 +237,40 @@ mod tests {
     fn menu_items_display_their_label() {
         let state = PaletteState::new(vec![menu_item("Open settings")]);
 
-        assert_eq!(state.display_label(&state.items[0], 3), "Open settings");
+        assert_eq!(state.display_label_at(0, 3).unwrap(), "Open settings");
+    }
+
+    #[test]
+    fn stale_selected_index_is_clamped_for_public_selection_methods() {
+        let mut state = PaletteState::new(vec![menu_item("one"), menu_item("two")]);
+        state.selected = 99;
+
+        assert_eq!(state.selected_index(), Some(1));
+        assert_eq!(state.selected_item().unwrap().label, "two");
+
+        state.toggle_expanded();
+        state.move_up();
+
+        assert_eq!(state.selected_index(), Some(0));
+        assert_eq!(state.selected, 0);
+        assert!(!state.expanded);
+    }
+
+    #[test]
+    fn stale_selected_index_expands_the_clamped_item() {
+        let path = "/home/congke/work/at-flow/src/ui/palette.rs";
+        let mut state = PaletteState::new(vec![
+            menu_item("Open settings"),
+            path_item("palette", path, PaletteItemKind::File),
+        ]);
+        state.selected = 99;
+        state.toggle_expanded();
+
+        assert_eq!(
+            state.display_label_at(1, 18).unwrap(),
+            display_path(&PathBuf::from(path), true, 18)
+        );
+        assert_eq!(state.display_label_at(99, 18), None);
     }
 
     #[test]
