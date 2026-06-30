@@ -49,7 +49,7 @@ impl Default for Config {
                 start_from_git_root: true,
             },
             open: OpenConfig {
-                editor: std::env::var("EDITOR").unwrap_or_else(|_| "nvim".to_owned()),
+                editor: "nvim".to_owned(),
                 gui_editor: "code".to_owned(),
                 file_opener: "xdg-open".to_owned(),
                 prefer_terminal_editor: true,
@@ -79,7 +79,10 @@ impl Default for Config {
 
 impl Config {
     pub fn load_or_default(path: &Path) -> Result<Self> {
-        if !path.exists() {
+        if !path
+            .try_exists()
+            .with_context(|| format!("failed to inspect config {}", path.display()))?
+        {
             return Ok(Self::default());
         }
 
@@ -116,8 +119,22 @@ mod tests {
         assert_eq!(config.general.theme, ThemeName::Mist);
         assert_eq!(config.general.max_recent, 100);
         assert!(config.general.start_from_git_root);
+        assert_eq!(config.open.editor, "nvim");
+        assert_eq!(config.open.gui_editor, "code");
         assert_eq!(config.open.file_opener, "xdg-open");
-        assert!(config.search.ignore.contains(&".git".to_owned()));
+        assert!(config.open.prefer_terminal_editor);
+        assert_eq!(config.search.roots, ["~/work", "~/code", "~/Documents"]);
+        assert_eq!(
+            config.search.ignore,
+            [
+                ".git",
+                "node_modules",
+                "__pycache__",
+                ".venv",
+                "target",
+                "dist"
+            ]
+        );
         assert!(config.history.record_atflow_opens);
         assert!(!config.history.record_shell_cd);
     }
@@ -140,7 +157,33 @@ mod tests {
         config.save_to(&path).unwrap();
         let loaded = Config::load_or_default(&path).unwrap();
 
-        assert_eq!(loaded.general.theme, ThemeName::Paper);
-        assert!(loaded.history.record_shell_cd);
+        assert_eq!(loaded, config);
+    }
+
+    #[test]
+    fn invalid_toml_reports_parse_context() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        fs::write(&path, "not valid toml").unwrap();
+
+        let error = Config::load_or_default(&path).unwrap_err();
+        let message = error.to_string();
+
+        assert!(message.contains("failed to parse config"));
+        assert!(message.contains(&path.display().to_string()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn load_config_reports_existence_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::os::unix::fs::symlink(&path, &path).unwrap();
+
+        let error = Config::load_or_default(&path).unwrap_err();
+        let message = error.to_string();
+
+        assert!(message.contains("failed to inspect config"));
+        assert!(message.contains(&path.display().to_string()));
     }
 }
