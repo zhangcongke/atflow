@@ -35,7 +35,7 @@ impl FlowState {
     }
 
     pub fn enter(&mut self, entry: &FlowEntry) {
-        if entry.is_dir {
+        if entry.is_dir && entry.path.is_dir() {
             self.cwd = entry.path.clone();
             self.selected = 0;
         }
@@ -44,13 +44,6 @@ impl FlowState {
 
 pub fn list_entries(path: &Path) -> Result<Vec<FlowEntry>> {
     let mut entries = Vec::new();
-    if let Some(parent) = path.parent() {
-        entries.push(FlowEntry {
-            path: parent.to_path_buf(),
-            name: "..".to_owned(),
-            is_dir: true,
-        });
-    }
 
     for entry in fs::read_dir(path)? {
         let entry = entry?;
@@ -64,6 +57,16 @@ pub fn list_entries(path: &Path) -> Result<Vec<FlowEntry>> {
     }
 
     entries.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then_with(|| a.name.cmp(&b.name)));
+    if let Some(parent) = path.parent() {
+        entries.insert(
+            0,
+            FlowEntry {
+                path: parent.to_path_buf(),
+                name: "..".to_owned(),
+                is_dir: true,
+            },
+        );
+    }
     Ok(entries)
 }
 
@@ -103,6 +106,73 @@ mod tests {
         assert!(entries[1].is_dir);
         assert_eq!(entries[2].name, "Cargo.toml");
         assert!(!entries[2].is_dir);
+    }
+
+    #[test]
+    fn keeps_parent_entry_first_when_child_names_sort_earlier() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir(dir.path().join("!cache")).unwrap();
+        fs::create_dir(dir.path().join("src")).unwrap();
+
+        let entries = list_entries(dir.path()).unwrap();
+
+        assert_eq!(entries[0].name, "..");
+        assert_eq!(entries[1].name, "!cache");
+    }
+
+    #[test]
+    fn navigation_resets_selection() {
+        let dir = tempfile::tempdir().unwrap();
+        let child = dir.path().join("src");
+        fs::create_dir(&child).unwrap();
+        fs::write(dir.path().join("Cargo.toml"), "").unwrap();
+
+        let mut state = FlowState {
+            cwd: child.clone(),
+            selected: 2,
+        };
+        state.parent();
+
+        assert_eq!(state.cwd, dir.path());
+        assert_eq!(state.selected, 0);
+
+        state.selected = 1;
+        state.enter(&FlowEntry {
+            path: child.clone(),
+            name: "src".to_owned(),
+            is_dir: true,
+        });
+
+        assert_eq!(state.cwd, child);
+        assert_eq!(state.selected, 0);
+
+        state.selected = 1;
+        state.enter(&FlowEntry {
+            path: dir.path().join("Cargo.toml"),
+            name: "Cargo.toml".to_owned(),
+            is_dir: false,
+        });
+
+        assert_eq!(state.cwd, child);
+        assert_eq!(state.selected, 1);
+    }
+
+    #[test]
+    fn enter_ignores_stale_directory_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let child = dir.path().join("src");
+        fs::create_dir(&child).unwrap();
+        let mut state = FlowState::new(dir.path().to_path_buf());
+        let stale_entry = FlowEntry {
+            path: child.clone(),
+            name: "src".to_owned(),
+            is_dir: true,
+        };
+        fs::remove_dir(&child).unwrap();
+
+        state.enter(&stale_entry);
+
+        assert_eq!(state.cwd, dir.path());
     }
 
     #[test]
