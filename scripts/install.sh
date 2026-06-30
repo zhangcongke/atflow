@@ -4,6 +4,9 @@ set -euo pipefail
 repo_url="${ATFLOW_REPO_URL:-https://github.com/zhangcongke/atflow.git}"
 install_dir="${ATFLOW_INSTALL_DIR:-$HOME/.local/bin}"
 install_dir="${install_dir%/}"
+if [ -z "$install_dir" ]; then
+  install_dir="/"
+fi
 
 die() {
   printf 'atflow install: %s\n' "$*" >&2
@@ -16,39 +19,31 @@ require_command() {
   fi
 }
 
-case "$install_dir" in
-  */bin)
-    install_root="${install_dir%/bin}"
-    ;;
-  bin)
-    install_root="."
-    ;;
-  *)
-    die "ATFLOW_INSTALL_DIR must end in /bin because cargo install --root writes to <root>/bin"
-    ;;
-esac
-
-if [ -z "$install_root" ]; then
-  install_root="/"
+if [ ! -t 0 ]; then
+  die "interactive stdin is required because at init asks setup questions; run with bash <(curl ...) or run at init manually"
 fi
 
-if [ "$install_root" = "/" ]; then
-  installed_path="/bin/at"
+if [ "$install_dir" = "/" ]; then
+  installed_path="/at"
 else
-  installed_path="$install_root/bin/at"
+  installed_path="$install_dir/at"
 fi
 
 require_command git
 require_command cargo
 
 tmp_dir="$(mktemp -d)"
+build_root="$tmp_dir/install"
 cleanup() {
   rm -rf "$tmp_dir"
 }
 trap cleanup EXIT
 
 git clone --depth 1 "$repo_url" "$tmp_dir/atflow"
-cargo install --path "$tmp_dir/atflow" --root "$install_root" --locked
+cargo install --path "$tmp_dir/atflow" --root "$build_root" --locked
+mkdir -p "$install_dir"
+cp "$build_root/bin/at" "$installed_path"
+chmod 755 "$installed_path"
 
 printf 'Installed Atflow to %s\n' "$installed_path"
 "$installed_path" init
