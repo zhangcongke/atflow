@@ -107,6 +107,7 @@ dependencies = [
  "crossterm",
  "dirs",
  "ignore",
+ "libc",
  "predicates",
  "ratatui",
  "rusqlite",

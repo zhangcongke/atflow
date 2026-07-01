@@ -13,7 +13,10 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, Paragraph},
 };
-use std::io;
+use std::fs::{File, OpenOptions};
+use std::io::{self, Write};
+#[cfg(unix)]
+use std::os::fd::{AsRawFd, RawFd};
 
 use crate::flow::{FlowEntry, FlowState};
 use crate::search::SearchFilter;
@@ -34,8 +37,8 @@ pub struct UiResponse {
 }
 
 pub fn run_palette(title: &str, mut state: PaletteState) -> Result<UiOutcome> {
-    let _session = TerminalSession::enter()?;
-    let mut terminal = Terminal::new(CrosstermBackend::new(io::stderr()))?;
+    let session = TerminalSession::enter()?;
+    let mut terminal = Terminal::new(CrosstermBackend::new(session.output()?))?;
     terminal.clear()?;
 
     loop {
@@ -60,7 +63,7 @@ where
     F: FnMut(&str, SearchFilter) -> Result<Vec<PaletteItem>>,
 {
     let _session = TerminalSession::enter()?;
-    let mut terminal = Terminal::new(CrosstermBackend::new(io::stderr()))?;
+    let mut terminal = Terminal::new(CrosstermBackend::new(_session.output()?))?;
     terminal.clear()?;
 
     loop {
@@ -78,7 +81,7 @@ where
 
 pub fn run_flow_palette(title: &str, mut flow: FlowState) -> Result<UiResponse> {
     let _session = TerminalSession::enter()?;
-    let mut terminal = Terminal::new(CrosstermBackend::new(io::stderr()))?;
+    let mut terminal = Terminal::new(CrosstermBackend::new(_session.output()?))?;
     terminal.clear()?;
     let mut state = flow_palette_state(&flow)?;
 
@@ -481,34 +484,86 @@ fn filter_label(filter: SearchFilter) -> &'static str {
     }
 }
 
-struct TerminalSession;
+struct TerminalSession {
+    tty: File,
+    #[cfg(unix)]
+    original_stdout_fd: RawFd,
+}
 
 impl TerminalSession {
     fn enter() -> Result<Self> {
-        enable_raw_mode()?;
-        let mut stderr = io::stderr();
-        if let Err(error) = execute!(stderr, EnterAlternateScreen) {
-            restore_terminal();
+        let tty = OpenOptions::new().read(true).write(true).open("/dev/tty")?;
+        #[cfg(unix)]
+        let original_stdout_fd = redirect_stdout_to(&tty)?;
+
+        if let Err(error) = enable_raw_mode() {
+            #[cfg(unix)]
+            restore_stdout(original_stdout_fd);
             return Err(error.into());
         }
-        if let Err(error) = execute!(stderr, Hide) {
-            restore_terminal();
+        if let Err(error) = execute!(&tty, EnterAlternateScreen) {
+            restore_terminal(&tty);
+            #[cfg(unix)]
+            restore_stdout(original_stdout_fd);
             return Err(error.into());
         }
-        Ok(Self)
+        if let Err(error) = execute!(&tty, Hide) {
+            restore_terminal(&tty);
+            #[cfg(unix)]
+            restore_stdout(original_stdout_fd);
+            return Err(error.into());
+        }
+        Ok(Self {
+            tty,
+            #[cfg(unix)]
+            original_stdout_fd,
+        })
+    }
+
+    fn output(&self) -> io::Result<File> {
+        self.tty.try_clone()
     }
 }
 
 impl Drop for TerminalSession {
     fn drop(&mut self) {
-        restore_terminal();
+        restore_terminal(&self.tty);
+        #[cfg(unix)]
+        restore_stdout(self.original_stdout_fd);
     }
 }
 
-fn restore_terminal() {
-    let mut stderr = io::stderr();
-    let _ = execute!(stderr, Show, LeaveAlternateScreen);
+fn restore_terminal(mut output: impl Write) {
+    let _ = execute!(output, Show, LeaveAlternateScreen);
     let _ = disable_raw_mode();
+}
+
+#[cfg(unix)]
+fn redirect_stdout_to(file: &File) -> io::Result<RawFd> {
+    let stdout_fd = io::stdout().as_raw_fd();
+    let original_stdout_fd = unsafe { libc::dup(stdout_fd) };
+    if original_stdout_fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+
+    if unsafe { libc::dup2(file.as_raw_fd(), stdout_fd) } < 0 {
+        let error = io::Error::last_os_error();
+        unsafe {
+            libc::close(original_stdout_fd);
+        }
+        return Err(error);
+    }
+
+    Ok(original_stdout_fd)
+}
+
+#[cfg(unix)]
+fn restore_stdout(original_stdout_fd: RawFd) {
+    let stdout_fd = io::stdout().as_raw_fd();
+    unsafe {
+        libc::dup2(original_stdout_fd, stdout_fd);
+        libc::close(original_stdout_fd);
+    }
 }
 
 #[cfg(test)]

@@ -350,6 +350,56 @@ fn shell_print_can_be_sourced_by_interactive_bash() {
 }
 
 #[test]
+fn at_function_menu_runs_when_stdout_is_captured() {
+    if !command_exists("script") || !command_exists("timeout") {
+        return;
+    }
+
+    let home = tempfile::tempdir().unwrap();
+    let config_home = tempfile::tempdir().unwrap();
+    let runner = home.path().join("run-at-menu.sh");
+    let bin_path = assert_cmd::cargo::cargo_bin("at");
+    let bin_dir = bin_path.parent().unwrap();
+    fs::write(
+        &runner,
+        format!(
+            "#!/usr/bin/env bash\nexport PATH='{}':\"$PATH\"\neval \"$(at shell print)\"\n@\n",
+            bin_dir.display()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&runner, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let command = format!(
+        "printf '\\033[1;1R\\033' | timeout 5s script -qfec {} /dev/null",
+        at::shell::shell_quote(&format!("bash {}", runner.display()))
+    );
+    let output = std::process::Command::new("bash")
+        .args(["-lc", &command])
+        .env("HOME", home.path())
+        .env("XDG_CONFIG_HOME", config_home.path())
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn command_exists(command: &str) -> bool {
+    std::process::Command::new("sh")
+        .args(["-c", &format!("command -v {command}")])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+#[test]
 fn shell_hook_outputs_cd_recorder() {
     AssertCommand::cargo_bin("at")
         .unwrap()
