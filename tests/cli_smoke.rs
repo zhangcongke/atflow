@@ -16,16 +16,15 @@ fn help_mentions_core_commands() {
         .arg("--help")
         .assert()
         .success()
-        .stdout(predicates::str::contains("menu"))
-        .stdout(predicates::str::contains("recent"))
-        .stdout(predicates::str::contains("search"));
+        .stdout(predicates::str::contains("flow"))
+        .stdout(predicates::str::contains("setting"));
 }
 
 #[test]
-fn search_accepts_optional_query_without_launching_tui() {
-    let cli = Cli::try_parse_from(["at", "search", "--shell", "nightlight", "loader"]).unwrap();
-    let Some(CliCommand::Search { shell, query }) = cli.command else {
-        panic!("expected search command");
+fn flow_accepts_optional_query_without_launching_tui() {
+    let cli = Cli::try_parse_from(["at", "flow", "--shell", "nightlight", "loader"]).unwrap();
+    let Some(CliCommand::Flow { shell, query }) = cli.command else {
+        panic!("expected flow command");
     };
 
     assert!(shell);
@@ -34,9 +33,9 @@ fn search_accepts_optional_query_without_launching_tui() {
         Some("nightlight loader")
     );
 
-    let cli = Cli::try_parse_from(["at", "search"]).unwrap();
-    let Some(CliCommand::Search { shell, query }) = cli.command else {
-        panic!("expected search command");
+    let cli = Cli::try_parse_from(["at", "flow"]).unwrap();
+    let Some(CliCommand::Flow { shell, query }) = cli.command else {
+        panic!("expected flow command");
     };
 
     assert!(!shell);
@@ -70,10 +69,10 @@ fn init_accepts_newline_defaults_and_writes_config() {
         .env("SHELL", "/bin/bash")
         .env("XDG_CONFIG_HOME", config_home.path())
         .env_remove("EDITOR")
-        .write_stdin("\n\n\n\n\n\n")
+        .write_stdin("\n\n\n\n\n\n\n")
         .assert()
         .success()
-        .stdout(predicates::str::contains("Atflow setup"))
+        .stdout(predicates::str::contains("AtFlow setup"))
         .stdout(predicates::str::contains("Install shell shortcuts"))
         .stdout(predicates::str::contains(format!(
             "Config saved to {}",
@@ -107,7 +106,7 @@ fn init_installs_shell_shortcuts_into_bash_profile() {
         .env("SHELL", "/bin/bash")
         .env("XDG_CONFIG_HOME", &config_home)
         .env_remove("EDITOR")
-        .write_stdin("\n\n\n\n\n\n")
+        .write_stdin("\n\n\n\n\n\n\n")
         .assert()
         .success()
         .stdout(predicates::str::contains(format!(
@@ -125,7 +124,10 @@ fn init_installs_shell_shortcuts_into_bash_profile() {
 
     let shell_script = fs::read_to_string(&shell_path).unwrap();
     assert!(shell_script.contains("function @ {"));
-    assert!(shell_script.contains("function @flow"));
+    assert!(shell_script.contains("function @setting"));
+    assert!(!shell_script.contains("function @flow"));
+    assert!(!shell_script.contains("function @search"));
+    assert!(!shell_script.contains("function @recent"));
     assert!(!shell_script.contains("_atflow_record_cd"));
 
     let profile = fs::read_to_string(&profile_path).unwrap();
@@ -148,7 +150,7 @@ fn init_fresh_config_uses_editor_env_default() {
         .env("SHELL", "/bin/bash")
         .env("XDG_CONFIG_HOME", config_home.path())
         .env("EDITOR", "hx")
-        .write_stdin("\n\n\n\n\n\n")
+        .write_stdin("\n\n\n\n\n\n\n")
         .assert()
         .success();
 
@@ -174,7 +176,7 @@ fn init_uses_available_editor_when_editor_env_is_missing() {
         .env("XDG_CONFIG_HOME", config_home.path())
         .env("PATH", bin_dir.path())
         .env_remove("EDITOR")
-        .write_stdin("\n\n\n\n\n\n")
+        .write_stdin("\n\n\n\n\n\n\n")
         .assert()
         .success();
 
@@ -194,7 +196,7 @@ fn init_cd_hook_only_prints_hook_guidance_and_saves_cd_history() {
         .env("HOME", home.path())
         .env("SHELL", "/bin/bash")
         .env("XDG_CONFIG_HOME", config_home.path())
-        .write_stdin("n\ny\n\n\n\n\n")
+        .write_stdin("n\ny\n\n\n\n\n\n")
         .assert()
         .success()
         .stdout(predicates::str::contains("@()").not())
@@ -230,7 +232,8 @@ fn shell_print_outputs_functions() {
         .assert()
         .success()
         .stdout(predicates::str::contains("function @ {"))
-        .stdout(predicates::str::contains("function @search"));
+        .stdout(predicates::str::contains("function @setting"))
+        .stdout(predicates::str::contains("function @search").not());
 }
 
 #[test]
@@ -277,7 +280,7 @@ fn shell_print_can_be_sourced_by_interactive_bash() {
 }
 
 #[test]
-fn at_function_menu_runs_when_stdout_is_captured() {
+fn at_function_flow_runs_when_stdout_is_captured() {
     if !command_exists("script") || !command_exists("timeout") {
         return;
     }

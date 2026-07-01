@@ -1,15 +1,13 @@
-# Atflow
+# AtFlow
 
-Atflow is a lightweight terminal command palette for moving through projects, recent directories, and files from a Linux shell. It installs a binary named `at` and shell shortcuts that make the palette feel like native commands.
+AtFlow is a lightweight terminal file flow for moving through projects, recent paths, and files from a Linux shell. It installs a binary named `at` and a shell shortcut named `@`.
 
 Status: MVP development preview. Linux and WSL are the first supported environments. The current focus is the Rust binary, shell integration, and local development installs; packaged installers are a long-term goal.
 
 ## Commands
 
-- `at`: opens the main menu.
-- `at recent`: opens recent directories.
-- `at flow`: opens the flow navigator.
-- `at search [query]`: searches files and directories, optionally starting with `query`.
+- `at`: opens Flow.
+- `at flow [query]`: opens Flow, optionally starting with `query`.
 - `at setting`: opens the interactive settings menu.
 - `at setting --path`: prints the config file path.
 - `at init`: runs the setup wizard.
@@ -18,12 +16,9 @@ Status: MVP development preview. Linux and WSL are the first supported environme
 
 After `at init`, restart your shell or source the generated shell integration file to enable:
 
-- `@`: main menu.
-- `@ recent`, `@ flow`, `@ search`, `@ setting`: space-separated shortcuts.
-- `@recent`: recent directories.
-- `@flow`: flow navigator.
-- `@search`: search palette.
-- `@search query`: search palette with an initial query.
+- `@`: Flow.
+- `@ query`: Flow with an initial search query.
+- `@ setting`: interactive settings menu.
 - `@setting`: interactive settings menu.
 
 ## Install
@@ -81,7 +76,7 @@ cargo install --path . --locked --root "$HOME/.local"
 
 ## Data Locations
 
-Atflow follows the XDG directories used by the platform:
+AtFlow follows the XDG directories used by the platform:
 
 - Config: `${XDG_CONFIG_HOME:-$HOME/.config}/at/config.toml`
 - Shell integration: `${XDG_CONFIG_HOME:-$HOME/.config}/at/shell.sh`
@@ -91,17 +86,15 @@ Atflow follows the XDG directories used by the platform:
 
 ## MVP Behavior
 
-The main `@` menu links to recent projects, flow navigation, search, and settings.
-
-When a page is opened from the main `@` menu, Esc returns to the main menu. When a page is opened directly, Esc exits.
-
 Long lists scroll to keep the selected row visible. Pressing Down on the last item wraps to the first item, and pressing Up on the first item wraps to the last item.
 
-`@recent` shows recently opened directories from Atflow history. If the optional `cd` hook is enabled, ordinary shell `cd` usage is also recorded.
+`@` opens Flow. The default list shows pinned paths first, then recently opened files and directories from AtFlow history. If the optional `cd` hook is enabled, ordinary shell `cd` usage is also recorded.
 
-`@flow` starts from the current Git root by default when one is found, otherwise from the current directory. The init wizard can disable Git-root start. Use Up/Down to move, Left or `h` to go to the parent directory, Right or `l` to enter the selected directory, and Enter to open the selected item. When you move to a parent directory, the cursor stays on the directory you just left.
+Typing text enters search mode in the same Flow page. By default the search root is the directory where `@` was invoked. Settings can switch search roots to the configured path list instead.
 
-`@search` searches the current directory, configured roots, and recent directories. `@search query` starts with `query` already typed; multiple words are joined with spaces. Tab cycles all, dirs, and files. Search respects git ignore files and the configured ignore names.
+Use Up/Down to move, Enter to enter a selected directory or open a selected file, Right to enter a selected directory, Left to move to the parent directory, Tab to pin or unpin the selected path, and Shift+Tab to cycle through pinned directories as the active root. When you move to a parent directory, the cursor stays on the directory you just left.
+
+Search respects git ignore files and the configured ignore names.
 
 Long paths are clipped in the middle to fit the terminal row. Press Space to expand the selected path to its full text; moving the selection collapses it again.
 
@@ -111,12 +104,13 @@ Theme changes in settings are saved to config and used by the TUI palettes.
 
 `at init` prompts for:
 
-- Whether to install shell shortcuts for `@`, `@recent`, `@flow`, `@search`, and `@setting`.
+- Whether to install shell shortcuts for `@` and `@setting`.
 - Whether to install and enable the `cd` hook for shell directory history.
 - The terminal editor command.
+- Search root mode.
 - Search roots.
 - Theme.
-- Whether `@flow` starts from the current Git root.
+- Whether Flow starts from the current Git root.
 
 ## Packaging Goals
 

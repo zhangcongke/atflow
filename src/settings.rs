@@ -1,4 +1,4 @@
-use crate::config::Config;
+use crate::config::{Config, SearchRootMode};
 use crate::ui::palette::PaletteItem;
 use crate::ui::theme::ThemeName;
 
@@ -13,6 +13,7 @@ enum SettingField {
     PreferTerminalEditor,
     RecordAtflowOpens,
     RecordShellCd,
+    SearchRootMode,
     SearchRoots,
     IgnoreNames,
 }
@@ -27,6 +28,7 @@ const FIELDS: &[SettingField] = &[
     SettingField::PreferTerminalEditor,
     SettingField::RecordAtflowOpens,
     SettingField::RecordShellCd,
+    SettingField::SearchRootMode,
     SettingField::SearchRoots,
     SettingField::IgnoreNames,
 ];
@@ -130,6 +132,13 @@ impl SettingsState {
             SettingField::RecordShellCd => {
                 self.config.history.record_shell_cd = !self.config.history.record_shell_cd;
             }
+            SettingField::SearchRootMode => {
+                self.config.search.root_mode = cycle_copy(
+                    self.config.search.root_mode,
+                    &[SearchRootMode::Invocation, SearchRootMode::Configured],
+                    step,
+                );
+            }
             SettingField::SearchRoots => {
                 self.config.search.roots = cycle_string_list(
                     &self.config.search.roots,
@@ -176,6 +185,10 @@ impl SettingsState {
             }
             SettingField::RecordAtflowOpens => bool_label(self.config.history.record_atflow_opens),
             SettingField::RecordShellCd => bool_label(self.config.history.record_shell_cd),
+            SettingField::SearchRootMode => match self.config.search.root_mode {
+                SearchRootMode::Invocation => "invocation cwd".to_owned(),
+                SearchRootMode::Configured => "configured roots".to_owned(),
+            },
             SettingField::SearchRoots => list_label(&self.config.search.roots),
             SettingField::IgnoreNames => list_label(&self.config.search.ignore),
         }
@@ -194,6 +207,7 @@ impl SettingField {
             Self::PreferTerminalEditor => "Terminal editor",
             Self::RecordAtflowOpens => "Record @ opens",
             Self::RecordShellCd => "Record shell cd",
+            Self::SearchRootMode => "Search root mode",
             Self::SearchRoots => "Search roots",
             Self::IgnoreNames => "Ignore names",
         }

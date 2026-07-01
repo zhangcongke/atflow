@@ -40,11 +40,11 @@ cleanup() {
 trap cleanup EXIT
 
 git clone --depth 1 "$repo_url" "$tmp_dir/atflow"
-printf 'Building Atflow...\n'
+printf 'Building AtFlow...\n'
 cargo install --path "$tmp_dir/atflow" --root "$build_root" --locked --quiet
 mkdir -p "$install_dir"
 cp "$build_root/bin/at" "$installed_path"
 chmod 755 "$installed_path"
 
-printf 'Installed Atflow to %s\n' "$installed_path"
+printf 'Installed AtFlow to %s\n' "$installed_path"
 "$installed_path" init

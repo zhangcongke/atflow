@@ -17,9 +17,9 @@ use std::io::{self, Write};
 use std::ops::Range;
 #[cfg(unix)]
 use std::os::fd::{AsRawFd, RawFd};
+use std::path::{Path, PathBuf};
 
 use crate::config::Config;
-use crate::flow::{FlowEntry, FlowState};
 use crate::search::SearchFilter;
 use crate::settings::SettingsState;
 use crate::ui::palette::{PaletteItem, PaletteItemKind, PaletteState};
@@ -43,6 +43,30 @@ pub struct UiResponse {
 pub enum SettingsOutcome {
     Saved(Config),
     Cancelled,
+}
+
+pub trait FlowDelegate {
+    fn recent_items(&mut self) -> Result<Vec<PaletteItem>>;
+    fn browse_items(&mut self, cwd: &Path) -> Result<Vec<PaletteItem>>;
+    fn search_items(&mut self, query: &str, roots: &[PathBuf]) -> Result<Vec<PaletteItem>>;
+    fn toggle_pin(&mut self, item: &PaletteItem) -> Result<()>;
+    fn pinned_dirs(&mut self) -> Result<Vec<PathBuf>>;
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UnifiedFlowMode {
+    Recent,
+    Browse,
+    Search,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct UnifiedFlowState {
+    cwd: PathBuf,
+    search_roots: Vec<PathBuf>,
+    pinned_root_index: Option<usize>,
+    mode: UnifiedFlowMode,
+    palette: PaletteState,
 }
 
 pub fn run_menu_palette(
@@ -119,25 +143,38 @@ where
     }
 }
 
-pub fn run_flow_palette(
+pub fn run_flow_palette<D: FlowDelegate>(
     title: &str,
-    mut flow: FlowState,
+    start_dir: PathBuf,
+    search_roots: Vec<PathBuf>,
+    initial_query: Option<String>,
     theme_name: ThemeName,
+    delegate: &mut D,
 ) -> Result<UiResponse> {
     let _session = TerminalSession::enter()?;
     let mut terminal = Terminal::new(CrosstermBackend::new(_session.output()?))?;
     terminal.clear()?;
-    let mut state = flow_palette_state(&flow)?;
+    let mut state = init_unified_flow_state(start_dir, search_roots, initial_query, delegate)?;
     let theme = PaletteTheme::from(theme_name);
 
     loop {
-        terminal.draw(|frame| render_palette(frame, title, &state, PaletteChrome::Flow, theme))?;
+        terminal.draw(|frame| {
+            let chrome = if state.mode == UnifiedFlowMode::Search {
+                PaletteChrome::FlowSearch
+            } else {
+                PaletteChrome::Flow
+            };
+            render_palette(frame, title, &state.palette, chrome, theme)
+        })?;
         if let Event::Key(key) = event::read()? {
             if !is_key_press(key) {
                 continue;
             }
-            if let Some(outcome) = handle_flow_key(&mut flow, &mut state, key)? {
-                return Ok(UiResponse { outcome, state });
+            if let Some(outcome) = handle_unified_flow_key(&mut state, key, delegate)? {
+                return Ok(UiResponse {
+                    outcome,
+                    state: state.palette,
+                });
             }
         }
     }
@@ -272,80 +309,114 @@ where
     Ok(outcome)
 }
 
-fn handle_flow_key(
-    flow: &mut FlowState,
-    state: &mut PaletteState,
+fn init_unified_flow_state<D: FlowDelegate>(
+    start_dir: PathBuf,
+    mut search_roots: Vec<PathBuf>,
+    initial_query: Option<String>,
+    delegate: &mut D,
+) -> Result<UnifiedFlowState> {
+    if search_roots.is_empty() {
+        search_roots.push(start_dir.clone());
+    }
+    let mut state = UnifiedFlowState {
+        cwd: start_dir,
+        search_roots,
+        pinned_root_index: None,
+        mode: UnifiedFlowMode::Recent,
+        palette: PaletteState::new(Vec::new()),
+    };
+    if let Some(query) = initial_query.filter(|query| !query.trim().is_empty()) {
+        state.mode = UnifiedFlowMode::Search;
+        state.palette.query = query;
+        refresh_unified_flow(&mut state, delegate, None)?;
+    } else {
+        refresh_unified_flow(&mut state, delegate, None)?;
+    }
+    Ok(state)
+}
+
+fn handle_unified_flow_key<D: FlowDelegate>(
+    state: &mut UnifiedFlowState,
     key: KeyEvent,
+    delegate: &mut D,
 ) -> Result<Option<UiOutcome>> {
     let outcome = match key {
-        KeyEvent {
-            code: KeyCode::Left,
-            ..
-        } => {
-            flow.parent()?;
-            *state = flow_palette_state(flow)?;
-            None
-        }
-        KeyEvent {
-            code: KeyCode::Char('h' | 'H'),
-            modifiers,
-            ..
-        } if is_plain_text_modifier(modifiers) => {
-            flow.parent()?;
-            *state = flow_palette_state(flow)?;
-            None
-        }
-        KeyEvent {
-            code: KeyCode::Right,
-            ..
-        } => {
-            let before = flow.cwd.clone();
-            if let Some(entry) = selected_flow_entry(state) {
-                flow.enter(&entry);
-            }
-            if flow.cwd != before {
-                *state = flow_palette_state(flow)?;
-            } else {
-                sync_flow_selection(flow, state);
-            }
-            None
-        }
-        KeyEvent {
-            code: KeyCode::Char('l' | 'L'),
-            modifiers,
-            ..
-        } if is_plain_text_modifier(modifiers) => {
-            let before = flow.cwd.clone();
-            if let Some(entry) = selected_flow_entry(state) {
-                flow.enter(&entry);
-            }
-            if flow.cwd != before {
-                *state = flow_palette_state(flow)?;
-            } else {
-                sync_flow_selection(flow, state);
-            }
-            None
-        }
         KeyEvent {
             code: KeyCode::Esc, ..
         } => Some(UiOutcome::Cancelled),
         KeyEvent {
-            code: KeyCode::Enter,
-            ..
-        } => state.selected_index().map(UiOutcome::Selected),
-        KeyEvent {
             code: KeyCode::Up, ..
         } => {
-            state.move_up();
-            sync_flow_selection(flow, state);
+            state.palette.move_up();
             None
         }
         KeyEvent {
             code: KeyCode::Down,
             ..
         } => {
-            state.move_down();
-            sync_flow_selection(flow, state);
+            state.palette.move_down();
+            None
+        }
+        KeyEvent {
+            code: KeyCode::BackTab,
+            ..
+        } => {
+            cycle_to_next_pinned_dir(state, delegate)?;
+            None
+        }
+        KeyEvent {
+            code: KeyCode::Tab,
+            modifiers,
+            ..
+        } if modifiers.contains(KeyModifiers::SHIFT) => {
+            cycle_to_next_pinned_dir(state, delegate)?;
+            None
+        }
+        KeyEvent {
+            code: KeyCode::Tab, ..
+        } => {
+            if let Some(item) = state.palette.selected_item().cloned() {
+                delegate.toggle_pin(&item)?;
+                refresh_unified_flow(state, delegate, item.path.as_deref())?;
+            }
+            None
+        }
+        KeyEvent {
+            code: KeyCode::Left,
+            ..
+        } => {
+            browse_parent(state, delegate)?;
+            None
+        }
+        KeyEvent {
+            code: KeyCode::Right,
+            ..
+        } => {
+            enter_selected_dir(state, delegate)?;
+            None
+        }
+        KeyEvent {
+            code: KeyCode::Enter,
+            ..
+        } => {
+            if selected_item_is_dir(state) {
+                enter_selected_dir(state, delegate)?;
+                None
+            } else {
+                state.palette.selected_index().map(UiOutcome::Selected)
+            }
+        }
+        KeyEvent {
+            code: KeyCode::Backspace,
+            ..
+        } => {
+            state.palette.query.pop();
+            if state.palette.query.is_empty() {
+                state.mode = UnifiedFlowMode::Recent;
+            } else {
+                state.mode = UnifiedFlowMode::Search;
+            }
+            refresh_unified_flow(state, delegate, None)?;
             None
         }
         KeyEvent {
@@ -353,12 +424,106 @@ fn handle_flow_key(
             modifiers,
             ..
         } if is_plain_text_modifier(modifiers) => {
-            state.toggle_expanded();
+            state.palette.toggle_expanded();
+            None
+        }
+        KeyEvent {
+            code: KeyCode::Char(ch),
+            modifiers,
+            ..
+        } if is_plain_text_modifier(modifiers) => {
+            state.mode = UnifiedFlowMode::Search;
+            state.palette.query.push(ch);
+            refresh_unified_flow(state, delegate, None)?;
             None
         }
         _ => None,
     };
     Ok(outcome)
+}
+
+fn refresh_unified_flow<D: FlowDelegate>(
+    state: &mut UnifiedFlowState,
+    delegate: &mut D,
+    preferred_path: Option<&Path>,
+) -> Result<()> {
+    let items = match state.mode {
+        UnifiedFlowMode::Recent => delegate.recent_items()?,
+        UnifiedFlowMode::Browse => delegate.browse_items(&state.cwd)?,
+        UnifiedFlowMode::Search => {
+            delegate.search_items(&state.palette.query, &state.search_roots)?
+        }
+    };
+    let query = state.palette.query.clone();
+    state.palette.replace_items(items);
+    state.palette.query = query;
+    if let Some(path) = preferred_path
+        && let Some(index) = state
+            .palette
+            .items
+            .iter()
+            .position(|item| item.path.as_deref() == Some(path))
+    {
+        state.palette.selected = index;
+    }
+    Ok(())
+}
+
+fn selected_item_is_dir(state: &UnifiedFlowState) -> bool {
+    state
+        .palette
+        .selected_item()
+        .is_some_and(|item| matches!(item.kind, PaletteItemKind::Dir))
+}
+
+fn enter_selected_dir<D: FlowDelegate>(
+    state: &mut UnifiedFlowState,
+    delegate: &mut D,
+) -> Result<()> {
+    let Some(item) = state.palette.selected_item().cloned() else {
+        return Ok(());
+    };
+    if !matches!(item.kind, PaletteItemKind::Dir) {
+        return Ok(());
+    }
+    let Some(path) = item.path else {
+        return Ok(());
+    };
+    state.cwd = path;
+    state.mode = UnifiedFlowMode::Browse;
+    state.palette.query.clear();
+    refresh_unified_flow(state, delegate, None)
+}
+
+fn browse_parent<D: FlowDelegate>(state: &mut UnifiedFlowState, delegate: &mut D) -> Result<()> {
+    let previous = state.cwd.clone();
+    let Some(parent) = state.cwd.parent() else {
+        return Ok(());
+    };
+    state.cwd = parent.to_path_buf();
+    state.mode = UnifiedFlowMode::Browse;
+    state.palette.query.clear();
+    refresh_unified_flow(state, delegate, Some(&previous))
+}
+
+fn cycle_to_next_pinned_dir<D: FlowDelegate>(
+    state: &mut UnifiedFlowState,
+    delegate: &mut D,
+) -> Result<()> {
+    let dirs = delegate.pinned_dirs()?;
+    if dirs.is_empty() {
+        return Ok(());
+    }
+    let index = state
+        .pinned_root_index
+        .map_or(0, |index| (index + 1) % dirs.len());
+    state.pinned_root_index = Some(index);
+    let root = dirs[index].clone();
+    state.cwd = root.clone();
+    state.search_roots = vec![root];
+    state.mode = UnifiedFlowMode::Browse;
+    state.palette.query.clear();
+    refresh_unified_flow(state, delegate, None)
 }
 
 fn handle_settings_key(settings: &mut SettingsState, key: KeyEvent) -> Option<SettingsOutcome> {
@@ -401,40 +566,6 @@ fn handle_settings_key(settings: &mut SettingsState, key: KeyEvent) -> Option<Se
     }
 }
 
-fn sync_flow_selection(flow: &mut FlowState, state: &PaletteState) {
-    flow.selected = state.selected_index().unwrap_or(0);
-}
-
-fn selected_flow_entry(state: &PaletteState) -> Option<FlowEntry> {
-    let item = state.selected_item()?;
-    Some(FlowEntry {
-        path: item.path.clone()?,
-        name: item.label.clone(),
-        is_dir: matches!(item.kind, PaletteItemKind::Dir),
-    })
-}
-
-fn flow_palette_state(flow: &FlowState) -> Result<PaletteState> {
-    let mut state = PaletteState::new(flow.entries()?.into_iter().map(flow_item).collect());
-    if !state.items.is_empty() {
-        state.selected = flow.selected.min(state.items.len() - 1);
-    }
-    Ok(state)
-}
-
-fn flow_item(entry: FlowEntry) -> PaletteItem {
-    PaletteItem {
-        label: entry.name,
-        path: Some(entry.path),
-        kind: if entry.is_dir {
-            PaletteItemKind::Dir
-        } else {
-            PaletteItemKind::File
-        },
-        source: "flow".to_owned(),
-    }
-}
-
 fn settings_palette_state(settings: &SettingsState) -> PaletteState {
     let mut state = PaletteState::new(settings.palette_items());
     state.selected = settings.selected();
@@ -463,6 +594,7 @@ enum PaletteChrome {
     Menu,
     List,
     Search,
+    FlowSearch,
     Flow,
     Settings,
 }
@@ -511,7 +643,8 @@ fn header_line(
     theme: PaletteTheme,
 ) -> Line<'static> {
     let title_span = Span::styled(title.to_owned(), theme.title_style());
-    if chrome != PaletteChrome::Search {
+    let show_query = matches!(chrome, PaletteChrome::Search | PaletteChrome::FlowSearch);
+    if !show_query {
         return Line::from(title_span);
     }
 
@@ -520,6 +653,14 @@ fn header_line(
     } else {
         state.query.as_str()
     };
+    if chrome == PaletteChrome::FlowSearch {
+        return Line::from(vec![
+            title_span,
+            Span::raw("  query: "),
+            Span::styled(query.to_owned(), theme.query_style()),
+        ]);
+    }
+
     Line::from(vec![
         title_span,
         Span::raw("  query: "),
@@ -534,6 +675,7 @@ fn footer_text(chrome: PaletteChrome) -> &'static str {
         PaletteChrome::Menu => menu_footer_text(),
         PaletteChrome::List => list_footer_text(),
         PaletteChrome::Search => search_footer_text(),
+        PaletteChrome::FlowSearch => flow_footer_text(),
         PaletteChrome::Flow => flow_footer_text(),
         PaletteChrome::Settings => settings_footer_text(),
     }
@@ -552,7 +694,7 @@ fn search_footer_text() -> &'static str {
 }
 
 fn flow_footer_text() -> &'static str {
-    "Esc cancel  Enter open  Up/Down move  Left/Right or h/l navigate  Space expand"
+    "Esc cancel  Enter open  Up/Down move  Left/Right navigate  Space expand  Tab pin  Shift+Tab pinned root"
 }
 
 fn settings_footer_text() -> &'static str {
@@ -583,8 +725,12 @@ fn palette_rows(
         .map(|(offset, item)| {
             let index = visible_range.start + offset;
             let marker = if Some(index) == selected { ">" } else { " " };
-            let suffix = palette_row_kind_text(item);
-            let suffix_width = suffix.map(|text| text.chars().count() + 2).unwrap_or(0);
+            let suffix = palette_row_suffix(item);
+            let suffix_width = if suffix.is_empty() {
+                0
+            } else {
+                suffix.chars().count() + 2
+            };
             let label_width = area_width.saturating_sub(suffix_width + 2).max(1);
             let label = state
                 .display_label_at(index, label_width)
@@ -596,7 +742,7 @@ fn palette_rows(
             };
 
             let mut spans = vec![Span::raw(format!("{marker} ")), Span::raw(label)];
-            if let Some(suffix) = suffix {
+            if !suffix.is_empty() {
                 spans.push(Span::styled(format!("  {suffix}"), theme.muted_style()));
             }
 
@@ -618,6 +764,16 @@ fn visible_item_range(state: &PaletteState, max_rows: usize) -> Range<usize> {
 
     let start = selected.saturating_add(1).saturating_sub(max_rows);
     start..(start + max_rows)
+}
+
+fn palette_row_suffix(item: &PaletteItem) -> String {
+    let kind = palette_row_kind_text(item);
+    match (item.pinned, kind) {
+        (true, Some(kind)) => format!("pinned {kind}"),
+        (true, None) => "pinned".to_owned(),
+        (false, Some(kind)) => kind.to_owned(),
+        (false, None) => String::new(),
+    }
 }
 
 fn palette_row_kind_text(item: &PaletteItem) -> Option<&'static str> {
@@ -721,11 +877,10 @@ fn restore_stdout(original_stdout_fd: RawFd) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::flow::FlowState;
     use crate::ui::palette::{PaletteItem, PaletteItemKind};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-    use std::fs;
-    use std::path::PathBuf;
+    use std::collections::HashMap;
+    use std::path::{Path, PathBuf};
 
     fn item(label: &str) -> PaletteItem {
         PaletteItem {
@@ -733,6 +888,7 @@ mod tests {
             path: None,
             kind: PaletteItemKind::Menu,
             source: "test".to_owned(),
+            pinned: false,
         }
     }
 
@@ -742,6 +898,52 @@ mod tests {
 
     fn ctrl_key(ch: char) -> KeyEvent {
         KeyEvent::new(KeyCode::Char(ch), KeyModifiers::CONTROL)
+    }
+
+    fn backtab_key() -> KeyEvent {
+        KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT)
+    }
+
+    fn dir_item(path: &str) -> PaletteItem {
+        PaletteItem::dir(PathBuf::from(path), "test")
+    }
+
+    fn file_item(path: &str) -> PaletteItem {
+        PaletteItem::file(PathBuf::from(path), "test")
+    }
+
+    #[derive(Default)]
+    struct FakeFlowDelegate {
+        recent: Vec<PaletteItem>,
+        browse: HashMap<PathBuf, Vec<PaletteItem>>,
+        search: HashMap<String, Vec<PaletteItem>>,
+        toggled: Vec<PathBuf>,
+        pinned_dirs: Vec<PathBuf>,
+    }
+
+    impl FlowDelegate for FakeFlowDelegate {
+        fn recent_items(&mut self) -> Result<Vec<PaletteItem>> {
+            Ok(self.recent.clone())
+        }
+
+        fn browse_items(&mut self, cwd: &Path) -> Result<Vec<PaletteItem>> {
+            Ok(self.browse.get(cwd).cloned().unwrap_or_default())
+        }
+
+        fn search_items(&mut self, query: &str, _roots: &[PathBuf]) -> Result<Vec<PaletteItem>> {
+            Ok(self.search.get(query).cloned().unwrap_or_default())
+        }
+
+        fn toggle_pin(&mut self, item: &PaletteItem) -> Result<()> {
+            if let Some(path) = item.path.clone() {
+                self.toggled.push(path);
+            }
+            Ok(())
+        }
+
+        fn pinned_dirs(&mut self) -> Result<Vec<PathBuf>> {
+            Ok(self.pinned_dirs.clone())
+        }
     }
 
     #[test]
@@ -839,6 +1041,153 @@ mod tests {
     }
 
     #[test]
+    fn unified_flow_initial_query_enters_search_mode() {
+        let start = PathBuf::from("/tmp/start");
+        let mut delegate = FakeFlowDelegate::default();
+        delegate
+            .search
+            .insert("abc".to_owned(), vec![file_item("/tmp/start/abc.rs")]);
+
+        let state = init_unified_flow_state(
+            start.clone(),
+            vec![start],
+            Some("abc".to_owned()),
+            &mut delegate,
+        )
+        .unwrap();
+
+        assert_eq!(state.mode, UnifiedFlowMode::Search);
+        assert_eq!(state.palette.query, "abc");
+        assert_eq!(
+            state.palette.selected_item().unwrap().path.as_deref(),
+            Some(Path::new("/tmp/start/abc.rs"))
+        );
+    }
+
+    #[test]
+    fn unified_flow_typing_searches_from_recent_mode() {
+        let start = PathBuf::from("/tmp/start");
+        let mut delegate = FakeFlowDelegate {
+            recent: vec![dir_item("/tmp/recent")],
+            ..Default::default()
+        };
+        delegate
+            .search
+            .insert("x".to_owned(), vec![file_item("/tmp/start/x.rs")]);
+        let mut state =
+            init_unified_flow_state(start.clone(), vec![start], None, &mut delegate).unwrap();
+
+        let outcome =
+            handle_unified_flow_key(&mut state, key(KeyCode::Char('x')), &mut delegate).unwrap();
+
+        assert_eq!(outcome, None);
+        assert_eq!(state.mode, UnifiedFlowMode::Search);
+        assert_eq!(state.palette.query, "x");
+        assert_eq!(
+            state.palette.selected_item().unwrap().path.as_deref(),
+            Some(Path::new("/tmp/start/x.rs"))
+        );
+    }
+
+    #[test]
+    fn unified_flow_enter_on_directory_browses_instead_of_exiting() {
+        let start = PathBuf::from("/tmp/start");
+        let src = PathBuf::from("/tmp/start/src");
+        let mut delegate = FakeFlowDelegate {
+            recent: vec![PaletteItem::dir(src.clone(), "recent")],
+            ..Default::default()
+        };
+        delegate
+            .browse
+            .insert(src.clone(), vec![file_item("/tmp/start/src/main.rs")]);
+        let mut state =
+            init_unified_flow_state(start.clone(), vec![start], None, &mut delegate).unwrap();
+
+        let outcome =
+            handle_unified_flow_key(&mut state, key(KeyCode::Enter), &mut delegate).unwrap();
+
+        assert_eq!(outcome, None);
+        assert_eq!(state.mode, UnifiedFlowMode::Browse);
+        assert_eq!(state.cwd, src);
+        assert_eq!(state.palette.query, "");
+        assert_eq!(
+            state.palette.selected_item().unwrap().path.as_deref(),
+            Some(Path::new("/tmp/start/src/main.rs"))
+        );
+    }
+
+    #[test]
+    fn unified_flow_enter_on_file_selects_it() {
+        let start = PathBuf::from("/tmp/start");
+        let mut delegate = FakeFlowDelegate {
+            recent: vec![file_item("/tmp/start/readme.md")],
+            ..Default::default()
+        };
+        let mut state =
+            init_unified_flow_state(start.clone(), vec![start], None, &mut delegate).unwrap();
+
+        let outcome =
+            handle_unified_flow_key(&mut state, key(KeyCode::Enter), &mut delegate).unwrap();
+
+        assert_eq!(outcome, Some(UiOutcome::Selected(0)));
+    }
+
+    #[test]
+    fn unified_flow_tab_toggles_pin_and_preserves_selection() {
+        let start = PathBuf::from("/tmp/start");
+        let target = PathBuf::from("/tmp/recent/two");
+        let mut delegate = FakeFlowDelegate {
+            recent: vec![
+                dir_item("/tmp/recent/one"),
+                PaletteItem::dir(target.clone(), "recent"),
+            ],
+            ..Default::default()
+        };
+        let mut state =
+            init_unified_flow_state(start.clone(), vec![start], None, &mut delegate).unwrap();
+        state.palette.selected = 1;
+
+        let outcome =
+            handle_unified_flow_key(&mut state, key(KeyCode::Tab), &mut delegate).unwrap();
+
+        assert_eq!(outcome, None);
+        assert_eq!(delegate.toggled, vec![target.clone()]);
+        assert_eq!(state.palette.selected, 1);
+        assert_eq!(
+            state.palette.selected_item().unwrap().path.as_deref(),
+            Some(target.as_path())
+        );
+    }
+
+    #[test]
+    fn unified_flow_backtab_cycles_to_pinned_dirs() {
+        let start = PathBuf::from("/tmp/start");
+        let first = PathBuf::from("/tmp/pinned/one");
+        let second = PathBuf::from("/tmp/pinned/two");
+        let mut delegate = FakeFlowDelegate {
+            recent: vec![dir_item("/tmp/recent")],
+            pinned_dirs: vec![first.clone(), second.clone()],
+            ..Default::default()
+        };
+        delegate
+            .browse
+            .insert(first.clone(), vec![file_item("/tmp/pinned/one/a.txt")]);
+        delegate
+            .browse
+            .insert(second.clone(), vec![file_item("/tmp/pinned/two/b.txt")]);
+        let mut state =
+            init_unified_flow_state(start.clone(), vec![start], None, &mut delegate).unwrap();
+
+        handle_unified_flow_key(&mut state, backtab_key(), &mut delegate).unwrap();
+        assert_eq!(state.cwd, first);
+        assert_eq!(state.search_roots, vec![PathBuf::from("/tmp/pinned/one")]);
+
+        handle_unified_flow_key(&mut state, backtab_key(), &mut delegate).unwrap();
+        assert_eq!(state.cwd, second);
+        assert_eq!(state.search_roots, vec![PathBuf::from("/tmp/pinned/two")]);
+    }
+
+    #[test]
     fn palette_row_shows_item_kind_instead_of_source() {
         let state = PaletteState::new(vec![
             PaletteItem::menu("Settings"),
@@ -861,57 +1210,13 @@ mod tests {
     }
 
     #[test]
-    fn flow_palette_omits_parent_entry() {
-        let dir = tempfile::tempdir().unwrap();
-        let child = dir.path().join("child");
-        fs::create_dir(&child).unwrap();
-        let flow = FlowState::new(child);
-
-        let state = flow_palette_state(&flow).unwrap();
-
-        assert!(!state.items.iter().any(|item| item.label == ".."));
-    }
-
-    #[test]
-    fn flow_right_enters_selected_directory_and_refreshes_items() {
-        let dir = tempfile::tempdir().unwrap();
-        let child = dir.path().join("src");
-        fs::create_dir(&child).unwrap();
-        fs::create_dir(child.join("nested")).unwrap();
-        let mut flow = FlowState::new(dir.path().to_path_buf());
-        let mut state = flow_palette_state(&flow).unwrap();
-        state.selected = 0;
-
-        let outcome = handle_flow_key(&mut flow, &mut state, key(KeyCode::Right)).unwrap();
-
-        assert_eq!(outcome, None);
-        assert_eq!(flow.cwd, child);
-        assert_eq!(state.selected, 0);
-        assert_eq!(state.items[0].label, "nested");
-    }
-
-    #[test]
-    fn flow_left_moves_to_parent_and_refreshes_items() {
-        let dir = tempfile::tempdir().unwrap();
-        fs::create_dir(dir.path().join("alpha")).unwrap();
-        let child = dir.path().join("src");
-        fs::create_dir(&child).unwrap();
-        let mut flow = FlowState::new(child);
-        let mut state = flow_palette_state(&flow).unwrap();
-
-        let outcome = handle_flow_key(&mut flow, &mut state, key(KeyCode::Left)).unwrap();
-
-        assert_eq!(outcome, None);
-        assert_eq!(flow.cwd, dir.path());
-        assert_eq!(state.items[state.selected].label, "src");
-    }
-
-    #[test]
     fn flow_footer_mentions_navigation_keys() {
         let footer = flow_footer_text();
 
         assert!(footer.contains("Left/Right"));
-        assert!(footer.contains("h/l"));
+        assert!(footer.contains("Tab pin"));
+        assert!(footer.contains("Shift+Tab"));
+        assert!(!footer.contains("h/l"));
         assert!(!footer.contains("Tab filter"));
         assert!(!footer.contains("Ctrl+E"));
         assert!(!footer.contains("Ctrl+O"));
@@ -946,6 +1251,24 @@ mod tests {
 
         assert_eq!(header.spans[2].style.fg, Some(theme.query_fg));
         assert_eq!(header.spans[4].style.fg, Some(theme.filter_fg));
+    }
+
+    #[test]
+    fn flow_search_header_omits_filter_controls() {
+        let mut state = PaletteState::new(vec![item("Settings")]);
+        state.query = "abc".to_owned();
+        let theme = PaletteTheme::from(ThemeName::Paper);
+
+        let header = header_line("@ Flow", &state, PaletteChrome::FlowSearch, theme);
+        let text = header
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+
+        assert_eq!(text, "@ Flow  query: abc");
+        assert_eq!(header.spans[2].style.fg, Some(theme.query_fg));
+        assert!(!text.contains("filter"));
     }
 
     #[test]

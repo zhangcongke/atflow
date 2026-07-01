@@ -30,8 +30,18 @@ pub struct OpenConfig {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SearchConfig {
+    #[serde(default)]
+    pub root_mode: SearchRootMode,
     pub roots: Vec<String>,
     pub ignore: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SearchRootMode {
+    #[default]
+    Invocation,
+    Configured,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -55,6 +65,7 @@ impl Default for Config {
                 prefer_terminal_editor: true,
             },
             search: SearchConfig {
+                root_mode: SearchRootMode::Invocation,
                 roots: vec![
                     "~/work".to_owned(),
                     "~/code".to_owned(),
@@ -123,6 +134,7 @@ mod tests {
         assert_eq!(config.open.gui_editor, "code");
         assert_eq!(config.open.file_opener, "xdg-open");
         assert!(config.open.prefer_terminal_editor);
+        assert_eq!(config.search.root_mode, SearchRootMode::Invocation);
         assert_eq!(config.search.roots, ["~/work", "~/code", "~/Documents"]);
         assert_eq!(
             config.search.ignore,
@@ -137,6 +149,41 @@ mod tests {
         );
         assert!(config.history.record_atflow_opens);
         assert!(!config.history.record_shell_cd);
+    }
+
+    #[test]
+    fn old_configs_without_search_root_mode_still_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        fs::write(
+            &path,
+            r#"
+[general]
+theme = "mist"
+max_recent = 100
+start_from_git_root = true
+
+[open]
+editor = "nvim"
+gui_editor = "code"
+file_opener = "xdg-open"
+prefer_terminal_editor = true
+
+[search]
+roots = ["~/work"]
+ignore = [".git"]
+
+[history]
+record_atflow_opens = true
+record_shell_cd = false
+"#,
+        )
+        .unwrap();
+
+        let config = Config::load_or_default(&path).unwrap();
+
+        assert_eq!(config.search.root_mode, SearchRootMode::Invocation);
+        assert_eq!(config.search.roots, ["~/work"]);
     }
 
     #[test]

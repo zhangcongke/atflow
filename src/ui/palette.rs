@@ -15,6 +15,7 @@ pub struct PaletteItem {
     pub path: Option<PathBuf>,
     pub kind: PaletteItemKind,
     pub source: String,
+    pub pinned: bool,
 }
 
 impl PaletteItem {
@@ -24,6 +25,7 @@ impl PaletteItem {
             path: Some(path),
             kind: PaletteItemKind::Dir,
             source: source.into(),
+            pinned: false,
         }
     }
 
@@ -33,6 +35,7 @@ impl PaletteItem {
             path: Some(path),
             kind: PaletteItemKind::File,
             source: source.into(),
+            pinned: false,
         }
     }
 
@@ -42,7 +45,13 @@ impl PaletteItem {
             path: None,
             kind: PaletteItemKind::Menu,
             source: "menu".to_owned(),
+            pinned: false,
         }
+    }
+
+    pub fn pinned(mut self) -> Self {
+        self.pinned = true;
+        self
     }
 }
 
@@ -152,6 +161,7 @@ mod tests {
             path: Some(PathBuf::from(path)),
             kind,
             source: "test".to_owned(),
+            pinned: false,
         }
     }
 
@@ -161,6 +171,7 @@ mod tests {
             path: None,
             kind: PaletteItemKind::Menu,
             source: "menu".to_owned(),
+            pinned: false,
         }
     }
 
@@ -324,6 +335,7 @@ mod tests {
         assert_eq!(item.path, None);
         assert_eq!(item.kind, PaletteItemKind::Menu);
         assert_eq!(item.source, "menu");
+        assert!(!item.pinned);
     }
 
     #[test]

@@ -1,13 +1,12 @@
 use anyhow::{Context, Result, bail};
 use at::cli::{Cli, Command, ShellCommand};
-use at::config::{Config, default_config_path};
-use at::history::{HistoryDb, HistorySource, PathKind, default_history_path};
+use at::config::{Config, SearchRootMode, default_config_path};
+use at::history::{HistoryDb, HistoryEntry, HistorySource, PathKind, default_history_path};
 use at::open::{OpenAction, OpenMode, resolve_editor_command, resolve_open_action};
 use at::search::{SearchFilter, SearchRequest, search};
 use at::ui::palette::{PaletteItem, PaletteItemKind, PaletteState};
 use at::ui::runtime::{
-    SettingsOutcome, UiOutcome, run_flow_palette, run_menu_palette, run_palette,
-    run_search_palette, run_settings_palette,
+    FlowDelegate, SettingsOutcome, UiOutcome, run_flow_palette, run_settings_palette,
 };
 use clap::Parser;
 use std::collections::HashSet;
@@ -17,14 +16,12 @@ use std::process::Stdio;
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    let command = cli.command.unwrap_or(Command::Menu { shell: false });
+    let command = cli.command.unwrap_or(Command::Flow {
+        shell: false,
+        query: Vec::new(),
+    });
     match command {
-        Command::Menu { shell } => run_menu(shell),
-        Command::Recent { shell } => run_recent(shell).map(|_| ()),
-        Command::Flow { shell } => run_flow(shell).map(|_| ()),
-        Command::Search { shell, query } => {
-            run_search(shell, Command::search_query(&query)).map(|_| ())
-        }
+        Command::Flow { shell, query } => run_flow(shell, Command::search_query(&query)),
         Command::Setting { path } => run_setting(false, path).map(|_| ()),
         Command::Init => at::init::run_init(),
         Command::RecentRecord { path } => record_cd_hook(Path::new(&path)),
@@ -45,106 +42,39 @@ fn load_config() -> Result<Config> {
     Config::load_or_default(&default_config_path())
 }
 
-fn run_menu(shell: bool) -> Result<()> {
-    loop {
-        let config = load_config()?;
-        let state = PaletteState::new(vec![
-            PaletteItem::menu("Recent projects"),
-            PaletteItem::menu("Flow navigator"),
-            PaletteItem::menu("Search files"),
-            PaletteItem::menu("Settings"),
-        ]);
-
-        match run_menu_palette("@ Menu", state, config.general.theme)? {
-            UiOutcome::Selected(0) => match menu_child_decision(run_recent(shell)?) {
-                MenuChildDecision::BackToMenu => continue,
-                MenuChildDecision::ExitMenu => return Ok(()),
-            },
-            UiOutcome::Selected(1) => match menu_child_decision(run_flow(shell)?) {
-                MenuChildDecision::BackToMenu => continue,
-                MenuChildDecision::ExitMenu => return Ok(()),
-            },
-            UiOutcome::Selected(2) => match menu_child_decision(run_search(shell, None)?) {
-                MenuChildDecision::BackToMenu => continue,
-                MenuChildDecision::ExitMenu => return Ok(()),
-            },
-            UiOutcome::Selected(3) => match run_setting(shell, false)? {
-                SettingResult::Cancelled | SettingResult::Saved => continue,
-                SettingResult::PathPrinted => return Ok(()),
-            },
-            _ => return Ok(()),
-        }
-    }
-}
-
-fn run_recent(shell: bool) -> Result<PageResult> {
+fn run_flow(shell: bool, query: Option<String>) -> Result<()> {
     let config = load_config()?;
     let db = HistoryDb::open(&default_history_path())?;
-    let items = db
-        .recent_dirs(config.general.max_recent)?
-        .into_iter()
-        .map(|entry| PaletteItem::dir(entry.path, entry.source.as_str()))
-        .collect();
-
-    handle_palette_result("@recent", PaletteState::new(items), shell, &config)
-}
-
-fn run_flow(shell: bool) -> Result<PageResult> {
-    let config = load_config()?;
-    let start = at::flow::flow_start(
-        &std::env::current_dir()?,
-        config.general.start_from_git_root,
-    );
-    let response = run_flow_palette(
-        "@flow",
-        at::flow::FlowState::new(start),
-        config.general.theme,
-    )?;
-
-    handle_open_outcome(&response.outcome, &response.state, shell, &config)
-}
-
-fn run_search(shell: bool, query: Option<String>) -> Result<PageResult> {
-    let config = load_config()?;
-    let roots = search_roots(&config)?;
-    let refresh = |query_text: &str, filter: SearchFilter| {
-        search_items(&roots, &config.search.ignore, query_text, filter)
+    let current_dir = std::env::current_dir()?;
+    let start = at::flow::flow_start(&current_dir, config.general.start_from_git_root);
+    let search_roots = flow_search_roots_from(&config, current_dir);
+    let theme = config.general.theme;
+    let mut delegate = FlowData {
+        config: &config,
+        db: &db,
     };
-    let initial_query = query.unwrap_or_default();
-    let mut state = PaletteState::new(refresh(&initial_query, SearchFilter::All)?);
-    state.query = initial_query;
+    let response = run_flow_palette("@ Flow", start, search_roots, query, theme, &mut delegate)?;
 
-    let response = run_search_palette("@search", state, refresh, config.general.theme)?;
     handle_open_outcome(&response.outcome, &response.state, shell, &config)
 }
 
-fn search_roots(config: &Config) -> Result<Vec<PathBuf>> {
-    let recent = recent_roots_from_history(&default_history_path(), config.general.max_recent)?;
-    Ok(search_roots_from(config, std::env::current_dir()?, recent))
-}
-
-fn recent_roots_from_history(path: &Path, limit: usize) -> Result<Vec<PathBuf>> {
-    if !path
-        .try_exists()
-        .with_context(|| format!("failed to inspect history database {}", path.display()))?
-    {
-        return Ok(Vec::new());
+fn flow_search_roots_from(config: &Config, current_dir: PathBuf) -> Vec<PathBuf> {
+    match config.search.root_mode {
+        SearchRootMode::Invocation => vec![current_dir],
+        SearchRootMode::Configured => {
+            let roots: Vec<PathBuf> = config
+                .search
+                .roots
+                .iter()
+                .map(|root| expand_home(root))
+                .collect();
+            if roots.is_empty() {
+                vec![current_dir]
+            } else {
+                roots
+            }
+        }
     }
-
-    let db = HistoryDb::open(path)?;
-    db.recent_dirs(limit)
-        .map(|entries| entries.into_iter().map(|entry| entry.path).collect())
-}
-
-fn search_roots_from(
-    config: &Config,
-    current_dir: PathBuf,
-    recent_dirs: Vec<PathBuf>,
-) -> Vec<PathBuf> {
-    let mut roots = vec![current_dir];
-    roots.extend(config.search.roots.iter().map(|root| expand_home(root)));
-    roots.extend(recent_dirs);
-    roots
 }
 
 fn search_items(
@@ -182,14 +112,121 @@ fn search_items(
         .collect())
 }
 
-fn handle_palette_result(
-    title: &str,
-    state: PaletteState,
-    shell: bool,
-    config: &Config,
-) -> Result<PageResult> {
-    let response = run_palette(title, state, config.general.theme)?;
-    handle_open_outcome(&response.outcome, &response.state, shell, config)
+struct FlowData<'a> {
+    config: &'a Config,
+    db: &'a HistoryDb,
+}
+
+impl FlowDelegate for FlowData<'_> {
+    fn recent_items(&mut self) -> Result<Vec<PaletteItem>> {
+        let limit = self.config.general.max_recent;
+        let mut items = Vec::new();
+        let mut seen = HashSet::new();
+
+        for entry in self.db.pinned_paths(limit)? {
+            let item = history_item(entry).pinned();
+            if remember_item_path(&mut seen, &item) {
+                items.push(item);
+            }
+            if items.len() >= limit {
+                return Ok(items);
+            }
+        }
+
+        for entry in self.db.recent_paths(limit)? {
+            let item = history_item(entry);
+            if remember_item_path(&mut seen, &item) {
+                items.push(item);
+            }
+            if items.len() >= limit {
+                break;
+            }
+        }
+
+        Ok(items)
+    }
+
+    fn browse_items(&mut self, cwd: &Path) -> Result<Vec<PaletteItem>> {
+        let pinned = self.pinned_path_keys()?;
+        at::flow::list_entries(cwd)?
+            .into_iter()
+            .map(|entry| {
+                let item = if entry.is_dir {
+                    PaletteItem::dir(entry.path, "flow")
+                } else {
+                    PaletteItem::file(entry.path, "flow")
+                };
+                Ok(mark_if_pinned(item, &pinned))
+            })
+            .collect()
+    }
+
+    fn search_items(&mut self, query: &str, roots: &[PathBuf]) -> Result<Vec<PaletteItem>> {
+        let pinned = self.pinned_path_keys()?;
+        Ok(
+            search_items(roots, &self.config.search.ignore, query, SearchFilter::All)?
+                .into_iter()
+                .map(|item| mark_if_pinned(item, &pinned))
+                .collect(),
+        )
+    }
+
+    fn toggle_pin(&mut self, item: &PaletteItem) -> Result<()> {
+        let Some(path) = item.path.as_deref() else {
+            return Ok(());
+        };
+        let kind = match item.kind {
+            PaletteItemKind::Dir => PathKind::Dir,
+            PaletteItemKind::File => PathKind::File,
+            PaletteItemKind::Menu => return Ok(()),
+        };
+        self.db.toggle_pin_at(path, kind, unix_now()?)
+    }
+
+    fn pinned_dirs(&mut self) -> Result<Vec<PathBuf>> {
+        self.db
+            .pinned_dirs(self.config.general.max_recent)
+            .map(|entries| entries.into_iter().map(|entry| entry.path).collect())
+    }
+}
+
+impl FlowData<'_> {
+    fn pinned_path_keys(&self) -> Result<HashSet<PathBuf>> {
+        let pinned = self.db.pinned_paths(self.config.general.max_recent)?;
+        Ok(pinned
+            .into_iter()
+            .map(|entry| path_key(&entry.path))
+            .collect())
+    }
+}
+
+fn history_item(entry: HistoryEntry) -> PaletteItem {
+    match entry.kind {
+        PathKind::Dir => PaletteItem::dir(entry.path, entry.source.as_str()),
+        PathKind::File => PaletteItem::file(entry.path, entry.source.as_str()),
+    }
+}
+
+fn remember_item_path(seen: &mut HashSet<PathBuf>, item: &PaletteItem) -> bool {
+    item.path
+        .as_deref()
+        .map(|path| seen.insert(path_key(path)))
+        .unwrap_or(true)
+}
+
+fn mark_if_pinned(item: PaletteItem, pinned: &HashSet<PathBuf>) -> PaletteItem {
+    let Some(path) = item.path.as_deref() else {
+        return item;
+    };
+    if pinned.contains(&path_key(path)) {
+        item.pinned()
+    } else {
+        item
+    }
+}
+
+fn path_key(path: &Path) -> PathBuf {
+    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
 }
 
 fn handle_open_outcome(
@@ -197,33 +234,14 @@ fn handle_open_outcome(
     state: &PaletteState,
     shell: bool,
     config: &Config,
-) -> Result<PageResult> {
+) -> Result<()> {
     if matches!(outcome, UiOutcome::Cancelled) {
-        return Ok(PageResult::Cancelled);
+        return Ok(());
     }
     if let Some(target) = selected_open_target(outcome, state) {
         run_open_action(&target.path, target.is_dir, target.mode, shell, config)?;
     }
-    Ok(PageResult::Done)
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PageResult {
-    Done,
-    Cancelled,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum MenuChildDecision {
-    BackToMenu,
-    ExitMenu,
-}
-
-fn menu_child_decision(result: PageResult) -> MenuChildDecision {
-    match result {
-        PageResult::Cancelled => MenuChildDecision::BackToMenu,
-        PageResult::Done => MenuChildDecision::ExitMenu,
-    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -447,7 +465,7 @@ fn ensure_config_file(path: &Path) -> Result<Config> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use at::config::Config;
+    use at::config::{Config, SearchRootMode};
     use at::history::{HistoryDb, HistorySource, PathKind};
     use at::open::OpenMode;
     use at::ui::palette::{PaletteItem, PaletteState};
@@ -502,18 +520,6 @@ mod tests {
         assert_eq!(selected_open_target(&UiOutcome::Cancelled, &state), None);
         assert_eq!(selected_open_target(&UiOutcome::Selected(0), &state), None);
         assert_eq!(selected_open_target(&UiOutcome::Selected(99), &state), None);
-    }
-
-    #[test]
-    fn menu_child_cancel_goes_back_to_menu() {
-        assert_eq!(
-            menu_child_decision(PageResult::Cancelled),
-            MenuChildDecision::BackToMenu
-        );
-        assert_eq!(
-            menu_child_decision(PageResult::Done),
-            MenuChildDecision::ExitMenu
-        );
     }
 
     #[test]
@@ -582,36 +588,64 @@ mod tests {
     }
 
     #[test]
-    fn missing_history_db_returns_no_recent_roots_without_creating_file() {
-        let dir = tempfile::tempdir().unwrap();
-        let history_path = dir.path().join("missing").join("history.sqlite");
+    fn invocation_search_root_uses_current_directory_only() {
+        let mut config = Config::default();
+        config.search.root_mode = SearchRootMode::Invocation;
+        config.search.roots = vec!["/configured".to_owned()];
 
-        let roots = recent_roots_from_history(&history_path, 100).unwrap();
+        let roots = flow_search_roots_from(&config, PathBuf::from("/current"));
 
-        assert!(roots.is_empty());
-        assert!(!history_path.exists());
-        assert!(!history_path.parent().unwrap().exists());
+        assert_eq!(roots, vec![PathBuf::from("/current")]);
     }
 
     #[test]
-    fn search_roots_include_recent_dirs_after_current_and_configured_roots() {
+    fn configured_search_roots_use_configured_paths_and_fall_back_to_current() {
         let mut config = Config::default();
+        config.search.root_mode = SearchRootMode::Configured;
         config.search.roots = vec!["/configured".to_owned()];
 
-        let roots = search_roots_from(
-            &config,
-            PathBuf::from("/current"),
-            vec![PathBuf::from("/recent")],
-        );
+        let roots = flow_search_roots_from(&config, PathBuf::from("/current"));
 
-        assert_eq!(
-            roots,
-            vec![
-                PathBuf::from("/current"),
-                PathBuf::from("/configured"),
-                PathBuf::from("/recent"),
-            ]
-        );
+        assert_eq!(roots, vec![PathBuf::from("/configured")]);
+
+        config.search.roots.clear();
+        let roots = flow_search_roots_from(&config, PathBuf::from("/current"));
+
+        assert_eq!(roots, vec![PathBuf::from("/current")]);
+    }
+
+    #[test]
+    fn flow_data_recent_items_put_pinned_paths_first_and_deduplicate() {
+        let db = HistoryDb::open_memory().unwrap();
+        let config = Config::default();
+        db.record_path_at(
+            Path::new("/tmp/recent"),
+            PathKind::Dir,
+            HistorySource::Atflow,
+            100,
+        )
+        .unwrap();
+        db.record_path_at(
+            Path::new("/tmp/pinned"),
+            PathKind::Dir,
+            HistorySource::Atflow,
+            200,
+        )
+        .unwrap();
+        db.toggle_pin_at(Path::new("/tmp/pinned"), PathKind::Dir, 300)
+            .unwrap();
+        let mut data = FlowData {
+            config: &config,
+            db: &db,
+        };
+
+        let items = data.recent_items().unwrap();
+
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].path.as_deref(), Some(Path::new("/tmp/pinned")));
+        assert!(items[0].pinned);
+        assert_eq!(items[1].path.as_deref(), Some(Path::new("/tmp/recent")));
+        assert!(!items[1].pinned);
     }
 
     #[test]

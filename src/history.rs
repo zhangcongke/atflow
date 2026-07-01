@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use std::convert::Infallible;
 use std::path::{Path, PathBuf};
@@ -127,6 +127,15 @@ impl HistoryDb {
             "#,
             )
             .context("failed to migrate history database")?;
+        let _ = self
+            .conn
+            .execute("ALTER TABLE paths ADD COLUMN pinned_at INTEGER", []);
+        self.conn
+            .execute(
+                "CREATE INDEX IF NOT EXISTS idx_paths_pinned ON paths(pinned_at DESC)",
+                [],
+            )
+            .context("failed to create pin index")?;
         Ok(())
     }
 
@@ -178,6 +187,100 @@ impl HistoryDb {
         rows.collect::<rusqlite::Result<Vec<_>>>()
             .context("failed to load recent dirs")
     }
+
+    pub fn recent_paths(&self, limit: usize) -> Result<Vec<HistoryEntry>> {
+        let mut stmt = self.conn.prepare(
+            r#"
+            SELECT path, kind, source, last_opened_at, open_count
+            FROM paths
+            ORDER BY last_opened_at DESC, open_count DESC
+            LIMIT ?1
+            "#,
+        )?;
+        let rows = stmt.query_map([limit as i64], history_entry_from_row)?;
+
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .context("failed to load recent paths")
+    }
+
+    pub fn pinned_paths(&self, limit: usize) -> Result<Vec<HistoryEntry>> {
+        self.pinned_paths_where("", limit, "failed to load pinned paths")
+    }
+
+    pub fn pinned_dirs(&self, limit: usize) -> Result<Vec<HistoryEntry>> {
+        self.pinned_paths_where("AND kind = 'dir'", limit, "failed to load pinned dirs")
+    }
+
+    pub fn toggle_pin_at(&self, path: &Path, kind: PathKind, timestamp: i64) -> Result<()> {
+        let path_text = path.display().to_string();
+        let pinned_at: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT pinned_at FROM paths WHERE path = ?1",
+                [&path_text],
+                |row| row.get(0),
+            )
+            .optional()
+            .with_context(|| format!("failed to inspect pin state for {path_text}"))?
+            .flatten();
+
+        match pinned_at {
+            Some(_) => {
+                self.conn
+                    .execute(
+                        "UPDATE paths SET pinned_at = NULL WHERE path = ?1",
+                        [&path_text],
+                    )
+                    .with_context(|| format!("failed to unpin path {path_text}"))?;
+            }
+            None => {
+                self.conn
+                    .execute(
+                        r#"
+                        INSERT INTO paths (path, kind, source, last_opened_at, open_count, pinned_at)
+                        VALUES (?1, ?2, ?3, 0, 0, ?4)
+                        ON CONFLICT(path) DO UPDATE SET
+                          kind = excluded.kind,
+                          pinned_at = excluded.pinned_at
+                        "#,
+                        params![&path_text, kind.as_str(), HistorySource::Atflow.as_str(), timestamp],
+                    )
+                    .with_context(|| format!("failed to pin path {path_text}"))?;
+            }
+        }
+        Ok(())
+    }
+
+    fn pinned_paths_where(
+        &self,
+        where_suffix: &str,
+        limit: usize,
+        context: &'static str,
+    ) -> Result<Vec<HistoryEntry>> {
+        let sql = format!(
+            r#"
+            SELECT path, kind, source, last_opened_at, open_count
+            FROM paths
+            WHERE pinned_at IS NOT NULL {where_suffix}
+            ORDER BY pinned_at DESC, last_opened_at DESC
+            LIMIT ?1
+            "#
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map([limit as i64], history_entry_from_row)?;
+
+        rows.collect::<rusqlite::Result<Vec<_>>>().context(context)
+    }
+}
+
+fn history_entry_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<HistoryEntry> {
+    Ok(HistoryEntry {
+        path: PathBuf::from(row.get::<_, String>(0)?),
+        kind: PathKind::from_str(&row.get::<_, String>(1)?),
+        source: HistorySource::from_str(&row.get::<_, String>(2)?),
+        last_opened_at: row.get(3)?,
+        open_count: row.get(4)?,
+    })
 }
 
 pub fn default_history_path() -> PathBuf {
@@ -222,6 +325,85 @@ mod tests {
         assert_eq!(recent[0].path, PathBuf::from("/tmp/new"));
         assert_eq!(recent[0].source, HistorySource::ShellCdHook);
         assert_eq!(recent[1].path, PathBuf::from("/tmp/old"));
+    }
+
+    #[test]
+    fn recent_paths_include_files_and_dirs() {
+        let db = HistoryDb::open_memory().unwrap();
+        db.record_path_at(
+            Path::new("/tmp/project"),
+            PathKind::Dir,
+            HistorySource::Atflow,
+            100,
+        )
+        .unwrap();
+        db.record_path_at(
+            Path::new("/tmp/project/main.rs"),
+            PathKind::File,
+            HistorySource::Atflow,
+            200,
+        )
+        .unwrap();
+
+        let recent = db.recent_paths(10).unwrap();
+
+        assert_eq!(recent.len(), 2);
+        assert_eq!(recent[0].path, PathBuf::from("/tmp/project/main.rs"));
+        assert_eq!(recent[0].kind, PathKind::File);
+        assert_eq!(recent[1].path, PathBuf::from("/tmp/project"));
+        assert_eq!(recent[1].kind, PathKind::Dir);
+    }
+
+    #[test]
+    fn pinned_paths_are_toggled_and_returned_before_recent_items() {
+        let db = HistoryDb::open_memory().unwrap();
+        db.record_path_at(
+            Path::new("/tmp/project"),
+            PathKind::Dir,
+            HistorySource::Atflow,
+            100,
+        )
+        .unwrap();
+        db.toggle_pin_at(Path::new("/tmp/project"), PathKind::Dir, 300)
+            .unwrap();
+        db.toggle_pin_at(Path::new("/tmp/notes.txt"), PathKind::File, 400)
+            .unwrap();
+
+        let pinned = db.pinned_paths(10).unwrap();
+
+        assert_eq!(pinned.len(), 2);
+        assert_eq!(pinned[0].path, PathBuf::from("/tmp/notes.txt"));
+        assert_eq!(pinned[0].kind, PathKind::File);
+        assert_eq!(pinned[1].path, PathBuf::from("/tmp/project"));
+        assert_eq!(pinned[1].kind, PathKind::Dir);
+
+        db.toggle_pin_at(Path::new("/tmp/project"), PathKind::Dir, 500)
+            .unwrap();
+        let pinned = db.pinned_paths(10).unwrap();
+
+        assert_eq!(pinned.len(), 1);
+        assert_eq!(pinned[0].path, PathBuf::from("/tmp/notes.txt"));
+    }
+
+    #[test]
+    fn pinned_dirs_only_returns_directories_in_pin_order() {
+        let db = HistoryDb::open_memory().unwrap();
+        db.toggle_pin_at(Path::new("/tmp/file.rs"), PathKind::File, 100)
+            .unwrap();
+        db.toggle_pin_at(Path::new("/tmp/old"), PathKind::Dir, 200)
+            .unwrap();
+        db.toggle_pin_at(Path::new("/tmp/new"), PathKind::Dir, 300)
+            .unwrap();
+
+        let pinned_dirs = db.pinned_dirs(10).unwrap();
+
+        assert_eq!(
+            pinned_dirs
+                .into_iter()
+                .map(|entry| entry.path)
+                .collect::<Vec<_>>(),
+            vec![PathBuf::from("/tmp/new"), PathBuf::from("/tmp/old")]
+        );
     }
 
     #[test]

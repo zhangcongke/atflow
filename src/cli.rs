@@ -4,7 +4,7 @@ use clap::{Parser, Subcommand};
 #[command(
     name = "at",
     version,
-    about = "A lightweight @ command palette for Linux terminals"
+    about = "AtFlow, a lightweight @ file flow for Linux terminals"
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -13,19 +13,7 @@ pub struct Cli {
 
 #[derive(Debug, Clone, Subcommand)]
 pub enum Command {
-    Menu {
-        #[arg(long)]
-        shell: bool,
-    },
-    Recent {
-        #[arg(long)]
-        shell: bool,
-    },
     Flow {
-        #[arg(long)]
-        shell: bool,
-    },
-    Search {
         #[arg(long)]
         shell: bool,
         #[arg(value_name = "QUERY")]

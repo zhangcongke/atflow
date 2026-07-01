@@ -16,17 +16,11 @@ pub fn functions_block() -> &'static str {
   local cmd="${1:-}"
   local out
   case "$cmd" in
-    recent) shift; out="$(command at recent --shell "$@")" || return; eval "$out" ;;
-    flow) shift; out="$(command at flow --shell "$@")" || return; eval "$out" ;;
-    search) shift; out="$(command at search --shell "$@")" || return; eval "$out" ;;
     setting) shift; command at setting "$@" ;;
-    "") out="$(command at menu --shell)" || return; eval "$out" ;;
-    *) out="$(command at menu --shell "$@")" || return; eval "$out" ;;
+    -h|--help|help) command at flow "$@" ;;
+    *) out="$(command at flow --shell "$@")" || return; eval "$out" ;;
   esac
 }
-function @recent { local out; out="$(command at recent --shell "$@")" || return; eval "$out"; }
-function @flow { local out; out="$(command at flow --shell "$@")" || return; eval "$out"; }
-function @search { local out; out="$(command at search --shell "$@")" || return; eval "$out"; }
 function @setting { command at setting "$@"; }"#
 }
 
@@ -74,22 +68,15 @@ mod tests {
     fn functions_include_user_facing_entries() {
         let block = functions_block();
         assert!(block.contains("function @ {"));
-        assert!(block.contains("function @recent {"));
-        assert!(block.contains("function @flow {"));
-        assert!(block.contains("function @search {"));
+        assert!(block.contains("function @setting {"));
     }
 
     #[test]
     fn functions_use_command_at_and_propagate_failures() {
         let block = functions_block();
-        assert!(block.contains(r#"out="$(command at menu --shell)" || return"#));
-        assert!(
-            block.contains(r#"recent) shift; out="$(command at recent --shell "$@")" || return"#)
-        );
         assert!(block.contains(r#"setting) shift; command at setting "$@""#));
-        assert!(block.contains(r#"out="$(command at recent --shell "$@")" || return"#));
+        assert!(block.contains(r#"-h|--help|help) command at flow "$@""#));
         assert!(block.contains(r#"out="$(command at flow --shell "$@")" || return"#));
-        assert!(block.contains(r#"out="$(command at search --shell "$@")" || return"#));
         assert!(block.contains(r#"function @setting { command at setting "$@"; }"#));
         assert!(!block.contains(r#"eval "$(at"#));
     }
