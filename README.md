@@ -10,7 +10,7 @@ Status: MVP development preview. Linux and WSL are the first supported environme
 - `at recent`: opens recent directories.
 - `at flow`: opens the flow navigator.
 - `at search [query]`: searches files and directories, optionally starting with `query`.
-- `at setting`: opens the config file in your configured editor.
+- `at setting`: opens the interactive settings menu.
 - `at setting --path`: prints the config file path.
 - `at init`: runs the setup wizard.
 - `at shell print`: prints the shell functions.
@@ -24,7 +24,7 @@ After `at init`, restart your shell or source the generated shell integration fi
 - `@flow`: flow navigator.
 - `@search`: search palette.
 - `@search query`: search palette with an initial query.
-- `@setting`: open settings in your editor.
+- `@setting`: interactive settings menu.
 
 ## Install
 
@@ -87,7 +87,7 @@ Atflow follows the XDG directories used by the platform:
 - Shell integration: `${XDG_CONFIG_HOME:-$HOME/.config}/at/shell.sh`
 - History: `${XDG_DATA_HOME:-$HOME/.local/share}/at/history.sqlite`
 
-`@setting` or `at setting` opens the active config file. Use `at setting --path` when you only need the path. If the configured editor is not installed, Atflow falls back to the first available editor from `nvim`, `vim`, `vi`, and `nano`.
+`@setting` or `at setting` opens an interactive settings menu. Use Left/Right to change the selected option, Enter to save, and Esc to cancel. Use `at setting --path` when you only need the config file path.
 
 ## MVP Behavior
 
@@ -95,7 +95,7 @@ The main `@` menu links to recent projects, flow navigation, search, and setting
 
 `@recent` shows recently opened directories from Atflow history. If the optional `cd` hook is enabled, ordinary shell `cd` usage is also recorded.
 
-`@flow` starts from the current Git root by default when one is found, otherwise from the current directory. The init wizard can disable Git-root start. Use Up/Down to move, Left or `h` to go to the parent directory, Right or `l` to enter the selected directory, Enter to select, Ctrl+E to open with the editor, and Ctrl+O to open with the system opener.
+`@flow` starts from the current Git root by default when one is found, otherwise from the current directory. The init wizard can disable Git-root start. Use Up/Down to move, Left or `h` to go to the parent directory, Right or `l` to enter the selected directory, and Enter to open the selected item. When you move to a parent directory, the cursor stays on the directory you just left.
 
 `@search` searches the current directory, configured roots, and recent directories. `@search query` starts with `query` already typed; multiple words are joined with spaces. Tab cycles all, dirs, and files. Search respects git ignore files and the configured ignore names.
 

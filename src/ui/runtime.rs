@@ -18,8 +18,10 @@ use std::io::{self, Write};
 #[cfg(unix)]
 use std::os::fd::{AsRawFd, RawFd};
 
+use crate::config::Config;
 use crate::flow::{FlowEntry, FlowState};
 use crate::search::SearchFilter;
+use crate::settings::SettingsState;
 use crate::ui::palette::{PaletteItem, PaletteItemKind, PaletteState};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -36,19 +38,43 @@ pub struct UiResponse {
     pub state: PaletteState,
 }
 
-pub fn run_palette(title: &str, mut state: PaletteState) -> Result<UiOutcome> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SettingsOutcome {
+    Saved(Config),
+    Cancelled,
+}
+
+pub fn run_menu_palette(title: &str, mut state: PaletteState) -> Result<UiOutcome> {
     let session = TerminalSession::enter()?;
     let mut terminal = Terminal::new(CrosstermBackend::new(session.output()?))?;
     terminal.clear()?;
 
     loop {
-        terminal.draw(|frame| render_palette(frame, title, &state))?;
+        terminal.draw(|frame| render_palette(frame, title, &state, PaletteChrome::Menu))?;
+        if let Event::Key(key) = event::read()? {
+            if !is_key_press(key) {
+                continue;
+            }
+            if let Some(outcome) = handle_menu_key(&mut state, key) {
+                return Ok(outcome);
+            }
+        }
+    }
+}
+
+pub fn run_palette(title: &str, mut state: PaletteState) -> Result<UiResponse> {
+    let session = TerminalSession::enter()?;
+    let mut terminal = Terminal::new(CrosstermBackend::new(session.output()?))?;
+    terminal.clear()?;
+
+    loop {
+        terminal.draw(|frame| render_palette(frame, title, &state, PaletteChrome::List))?;
         if let Event::Key(key) = event::read()? {
             if !is_key_press(key) {
                 continue;
             }
             if let Some(outcome) = handle_palette_key(&mut state, key) {
-                return Ok(outcome);
+                return Ok(UiResponse { outcome, state });
             }
         }
     }
@@ -67,7 +93,7 @@ where
     terminal.clear()?;
 
     loop {
-        terminal.draw(|frame| render_palette(frame, title, &state))?;
+        terminal.draw(|frame| render_palette(frame, title, &state, PaletteChrome::Search))?;
         if let Event::Key(key) = event::read()? {
             if !is_key_press(key) {
                 continue;
@@ -86,8 +112,7 @@ pub fn run_flow_palette(title: &str, mut flow: FlowState) -> Result<UiResponse> 
     let mut state = flow_palette_state(&flow)?;
 
     loop {
-        terminal
-            .draw(|frame| render_palette_with_footer(frame, title, &state, flow_footer_text()))?;
+        terminal.draw(|frame| render_palette(frame, title, &state, PaletteChrome::Flow))?;
         if let Event::Key(key) = event::read()? {
             if !is_key_press(key) {
                 continue;
@@ -96,6 +121,53 @@ pub fn run_flow_palette(title: &str, mut flow: FlowState) -> Result<UiResponse> 
                 return Ok(UiResponse { outcome, state });
             }
         }
+    }
+}
+
+pub fn run_settings_palette(config: Config) -> Result<SettingsOutcome> {
+    let _session = TerminalSession::enter()?;
+    let mut terminal = Terminal::new(CrosstermBackend::new(_session.output()?))?;
+    terminal.clear()?;
+    let mut settings = SettingsState::new(config);
+
+    loop {
+        let state = settings_palette_state(&settings);
+        terminal
+            .draw(|frame| render_palette(frame, "@ Setting", &state, PaletteChrome::Settings))?;
+        if let Event::Key(key) = event::read()? {
+            if !is_key_press(key) {
+                continue;
+            }
+            if let Some(outcome) = handle_settings_key(&mut settings, key) {
+                return Ok(outcome);
+            }
+        }
+    }
+}
+
+fn handle_menu_key(state: &mut PaletteState, key: KeyEvent) -> Option<UiOutcome> {
+    match key {
+        KeyEvent {
+            code: KeyCode::Esc, ..
+        } => Some(UiOutcome::Cancelled),
+        KeyEvent {
+            code: KeyCode::Enter,
+            ..
+        } => state.selected_index().map(UiOutcome::Selected),
+        KeyEvent {
+            code: KeyCode::Up, ..
+        } => {
+            state.move_up();
+            None
+        }
+        KeyEvent {
+            code: KeyCode::Down,
+            ..
+        } => {
+            state.move_down();
+            None
+        }
+        _ => None,
     }
 }
 
@@ -122,46 +194,11 @@ fn handle_palette_key(state: &mut PaletteState, key: KeyEvent) -> Option<UiOutco
             None
         }
         KeyEvent {
-            code: KeyCode::Tab, ..
-        } => {
-            state.cycle_filter();
-            None
-        }
-        KeyEvent {
-            code: KeyCode::Backspace,
-            ..
-        } => {
-            state.query.pop();
-            None
-        }
-        KeyEvent {
             code: KeyCode::Char(' '),
             modifiers,
             ..
         } if is_plain_text_modifier(modifiers) => {
             state.toggle_expanded();
-            None
-        }
-        KeyEvent {
-            code: KeyCode::Char('e' | 'E'),
-            modifiers,
-            ..
-        } if modifiers.contains(KeyModifiers::CONTROL) => {
-            state.selected_index().map(UiOutcome::Editor)
-        }
-        KeyEvent {
-            code: KeyCode::Char('o' | 'O'),
-            modifiers,
-            ..
-        } if modifiers.contains(KeyModifiers::CONTROL) => {
-            state.selected_index().map(UiOutcome::System)
-        }
-        KeyEvent {
-            code: KeyCode::Char(ch),
-            modifiers,
-            ..
-        } if is_plain_text_modifier(modifiers) => {
-            state.query.push(ch);
             None
         }
         _ => None,
@@ -224,7 +261,7 @@ fn handle_flow_key(
             code: KeyCode::Left,
             ..
         } => {
-            flow.parent();
+            flow.parent()?;
             *state = flow_palette_state(flow)?;
             None
         }
@@ -233,7 +270,7 @@ fn handle_flow_key(
             modifiers,
             ..
         } if is_plain_text_modifier(modifiers) => {
-            flow.parent();
+            flow.parent()?;
             *state = flow_palette_state(flow)?;
             None
         }
@@ -298,23 +335,49 @@ fn handle_flow_key(
             state.toggle_expanded();
             None
         }
-        KeyEvent {
-            code: KeyCode::Char('e' | 'E'),
-            modifiers,
-            ..
-        } if modifiers.contains(KeyModifiers::CONTROL) => {
-            state.selected_index().map(UiOutcome::Editor)
-        }
-        KeyEvent {
-            code: KeyCode::Char('o' | 'O'),
-            modifiers,
-            ..
-        } if modifiers.contains(KeyModifiers::CONTROL) => {
-            state.selected_index().map(UiOutcome::System)
-        }
         _ => None,
     };
     Ok(outcome)
+}
+
+fn handle_settings_key(settings: &mut SettingsState, key: KeyEvent) -> Option<SettingsOutcome> {
+    match key {
+        KeyEvent {
+            code: KeyCode::Esc, ..
+        } => Some(SettingsOutcome::Cancelled),
+        KeyEvent {
+            code: KeyCode::Enter,
+            ..
+        } => Some(SettingsOutcome::Saved(settings.clone().into_config())),
+        KeyEvent {
+            code: KeyCode::Up, ..
+        } => {
+            settings.move_up();
+            None
+        }
+        KeyEvent {
+            code: KeyCode::Down,
+            ..
+        } => {
+            settings.move_down();
+            None
+        }
+        KeyEvent {
+            code: KeyCode::Left,
+            ..
+        } => {
+            settings.change_left();
+            None
+        }
+        KeyEvent {
+            code: KeyCode::Right,
+            ..
+        } => {
+            settings.change_right();
+            None
+        }
+        _ => None,
+    }
 }
 
 fn sync_flow_selection(flow: &mut FlowState, state: &PaletteState) {
@@ -351,6 +414,12 @@ fn flow_item(entry: FlowEntry) -> PaletteItem {
     }
 }
 
+fn settings_palette_state(settings: &SettingsState) -> PaletteState {
+    let mut state = PaletteState::new(settings.palette_items());
+    state.selected = settings.selected();
+    state
+}
+
 fn refresh_items<F>(state: &mut PaletteState, refresh: &mut F) -> Result<()>
 where
     F: FnMut(&str, SearchFilter) -> Result<Vec<PaletteItem>>,
@@ -368,16 +437,16 @@ fn is_plain_text_modifier(modifiers: KeyModifiers) -> bool {
     !modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
 }
 
-fn render_palette(frame: &mut Frame<'_>, title: &str, state: &PaletteState) {
-    render_palette_with_footer(frame, title, state, default_footer_text());
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PaletteChrome {
+    Menu,
+    List,
+    Search,
+    Flow,
+    Settings,
 }
 
-fn render_palette_with_footer(
-    frame: &mut Frame<'_>,
-    title: &str,
-    state: &PaletteState,
-    footer_text: &'static str,
-) {
+fn render_palette(frame: &mut Frame<'_>, title: &str, state: &PaletteState, chrome: PaletteChrome) {
     let area = frame.area();
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -388,23 +457,9 @@ fn render_palette_with_footer(
         ])
         .split(area);
 
-    let query = if state.query.is_empty() {
-        "<empty>"
-    } else {
-        state.query.as_str()
-    };
-    let header = Line::from(vec![
-        Span::styled(
-            title.to_owned(),
-            Style::default().add_modifier(Modifier::BOLD),
-        ),
-        Span::raw("  query: "),
-        Span::styled(query.to_owned(), Style::default().fg(Color::Yellow)),
-        Span::raw("  filter: "),
-        Span::styled(filter_label(state.filter), Style::default().fg(Color::Cyan)),
-    ]);
     frame.render_widget(
-        Paragraph::new(header).block(Block::default().borders(Borders::ALL)),
+        Paragraph::new(header_line(title, state, chrome))
+            .block(Block::default().borders(Borders::ALL)),
         chunks[0],
     );
 
@@ -416,17 +471,62 @@ fn render_palette_with_footer(
     );
 
     frame.render_widget(
-        Paragraph::new(footer_text).block(Block::default().borders(Borders::ALL)),
+        Paragraph::new(footer_text(chrome)).block(Block::default().borders(Borders::ALL)),
         chunks[2],
     );
 }
 
-fn default_footer_text() -> &'static str {
-    "Esc cancel  Enter select  Up/Down move  Space expand  Tab filter  Ctrl+E editor  Ctrl+O system"
+fn header_line(title: &str, state: &PaletteState, chrome: PaletteChrome) -> Line<'static> {
+    let title_span = Span::styled(
+        title.to_owned(),
+        Style::default().add_modifier(Modifier::BOLD),
+    );
+    if chrome != PaletteChrome::Search {
+        return Line::from(title_span);
+    }
+
+    let query = if state.query.is_empty() {
+        "<empty>"
+    } else {
+        state.query.as_str()
+    };
+    Line::from(vec![
+        title_span,
+        Span::raw("  query: "),
+        Span::styled(query.to_owned(), Style::default().fg(Color::Yellow)),
+        Span::raw("  filter: "),
+        Span::styled(filter_label(state.filter), Style::default().fg(Color::Cyan)),
+    ])
+}
+
+fn footer_text(chrome: PaletteChrome) -> &'static str {
+    match chrome {
+        PaletteChrome::Menu => menu_footer_text(),
+        PaletteChrome::List => list_footer_text(),
+        PaletteChrome::Search => search_footer_text(),
+        PaletteChrome::Flow => flow_footer_text(),
+        PaletteChrome::Settings => settings_footer_text(),
+    }
+}
+
+fn menu_footer_text() -> &'static str {
+    "Esc cancel  Enter select  Up/Down move"
+}
+
+fn list_footer_text() -> &'static str {
+    "Esc cancel  Enter open  Up/Down move  Space expand"
+}
+
+fn search_footer_text() -> &'static str {
+    "Esc cancel  Enter open  Up/Down move  Space expand  Tab filter"
 }
 
 fn flow_footer_text() -> &'static str {
-    "Esc cancel  Enter select  Up/Down move  Left/Right or h/l navigate  Space expand  Ctrl+E editor  Ctrl+O system"
+    "Esc cancel  Enter open  Up/Down move  Left/Right or h/l navigate  Space expand"
+}
+
+fn settings_footer_text() -> &'static str {
+    "Esc cancel  Enter save  Up/Down move  Left/Right change"
 }
 
 fn palette_rows(state: &PaletteState, area_width: usize) -> Vec<ListItem<'static>> {
@@ -441,8 +541,9 @@ fn palette_rows(state: &PaletteState, area_width: usize) -> Vec<ListItem<'static
         .enumerate()
         .map(|(index, item)| {
             let marker = if Some(index) == selected { ">" } else { " " };
-            let source_width = item.source.chars().count() + 3;
-            let label_width = area_width.saturating_sub(source_width + 2).max(1);
+            let suffix = palette_row_kind_text(item);
+            let suffix_width = suffix.map(|text| text.chars().count() + 2).unwrap_or(0);
+            let label_width = area_width.saturating_sub(suffix_width + 2).max(1);
             let label = state
                 .display_label_at(index, label_width)
                 .unwrap_or_else(|| item.label.clone());
@@ -455,24 +556,24 @@ fn palette_rows(state: &PaletteState, area_width: usize) -> Vec<ListItem<'static
                 Style::default()
             };
 
-            ListItem::new(Line::from(vec![
-                Span::raw(format!("{marker} ")),
-                Span::raw(label),
-                Span::styled(
-                    format!("  {}", palette_row_kind_text(item)),
+            let mut spans = vec![Span::raw(format!("{marker} ")), Span::raw(label)];
+            if let Some(suffix) = suffix {
+                spans.push(Span::styled(
+                    format!("  {suffix}"),
                     Style::default().fg(Color::DarkGray),
-                ),
-            ]))
-            .style(style)
+                ));
+            }
+
+            ListItem::new(Line::from(spans)).style(style)
         })
         .collect()
 }
 
-fn palette_row_kind_text(item: &PaletteItem) -> &str {
+fn palette_row_kind_text(item: &PaletteItem) -> Option<&'static str> {
     match item.kind {
-        PaletteItemKind::Menu => "menu",
-        PaletteItemKind::Dir => "dir",
-        PaletteItemKind::File => "file",
+        PaletteItemKind::Menu => None,
+        PaletteItemKind::Dir => Some("dir"),
+        PaletteItemKind::File => Some("file"),
     }
 }
 
@@ -593,23 +694,29 @@ mod tests {
     }
 
     #[test]
-    fn enter_on_empty_has_no_outcome() {
+    fn menu_enter_on_empty_has_no_outcome() {
         let mut state = PaletteState::new(vec![]);
 
-        let outcome = handle_palette_key(&mut state, key(KeyCode::Enter));
+        let outcome = handle_menu_key(&mut state, key(KeyCode::Enter));
 
         assert_eq!(outcome, None);
     }
 
     #[test]
-    fn editor_and_system_on_empty_have_no_outcome() {
-        let mut state = PaletteState::new(vec![]);
+    fn list_shortcuts_do_not_handle_search_or_forced_open_keys() {
+        let mut state = PaletteState::new(vec![item("one")]);
 
+        let tab = handle_palette_key(&mut state, key(KeyCode::Tab));
+        let typed = handle_palette_key(&mut state, key(KeyCode::Char('x')));
         let editor = handle_palette_key(&mut state, ctrl_key('e'));
         let system = handle_palette_key(&mut state, ctrl_key('o'));
 
+        assert_eq!(tab, None);
+        assert_eq!(typed, None);
         assert_eq!(editor, None);
         assert_eq!(system, None);
+        assert_eq!(state.query, "");
+        assert_eq!(state.filter, SearchFilter::All);
     }
 
     #[test]
@@ -683,12 +790,14 @@ mod tests {
     #[test]
     fn palette_row_shows_item_kind_instead_of_source() {
         let state = PaletteState::new(vec![
+            PaletteItem::menu("Settings"),
             PaletteItem::dir(PathBuf::from("/tmp/project"), "flow"),
             PaletteItem::file(PathBuf::from("/tmp/project/main.rs"), "search"),
         ]);
 
-        assert_eq!(palette_row_kind_text(&state.items[0]), "dir");
-        assert_eq!(palette_row_kind_text(&state.items[1]), "file");
+        assert_eq!(palette_row_kind_text(&state.items[0]), None);
+        assert_eq!(palette_row_kind_text(&state.items[1]), Some("dir"));
+        assert_eq!(palette_row_kind_text(&state.items[2]), Some("file"));
     }
 
     #[test]
@@ -724,6 +833,7 @@ mod tests {
     #[test]
     fn flow_left_moves_to_parent_and_refreshes_items() {
         let dir = tempfile::tempdir().unwrap();
+        fs::create_dir(dir.path().join("alpha")).unwrap();
         let child = dir.path().join("src");
         fs::create_dir(&child).unwrap();
         let mut flow = FlowState::new(child);
@@ -733,8 +843,7 @@ mod tests {
 
         assert_eq!(outcome, None);
         assert_eq!(flow.cwd, dir.path());
-        assert_eq!(state.selected, 0);
-        assert_eq!(state.items[0].label, "src");
+        assert_eq!(state.items[state.selected].label, "src");
     }
 
     #[test]
@@ -744,5 +853,47 @@ mod tests {
         assert!(footer.contains("Left/Right"));
         assert!(footer.contains("h/l"));
         assert!(!footer.contains("Tab filter"));
+        assert!(!footer.contains("Ctrl+E"));
+        assert!(!footer.contains("Ctrl+O"));
+    }
+
+    #[test]
+    fn menu_header_and_footer_are_not_search_controls() {
+        let state = PaletteState::new(vec![item("Settings")]);
+        let header = header_line("@ Menu", &state, PaletteChrome::Menu)
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+
+        assert_eq!(header, "@ Menu");
+        assert!(!menu_footer_text().contains("Tab filter"));
+        assert!(!menu_footer_text().contains("Space expand"));
+    }
+
+    #[test]
+    fn settings_key_handler_changes_and_returns_saved_config() {
+        let mut settings = SettingsState::new(Config::default());
+
+        assert_eq!(
+            handle_settings_key(&mut settings, key(KeyCode::Right)),
+            None
+        );
+        let Some(SettingsOutcome::Saved(saved)) =
+            handle_settings_key(&mut settings, key(KeyCode::Enter))
+        else {
+            panic!("expected saved config");
+        };
+
+        assert_eq!(saved.general.theme, crate::ui::theme::ThemeName::Ink);
+    }
+
+    #[test]
+    fn settings_escape_cancels_without_returning_config() {
+        let mut settings = SettingsState::new(Config::default());
+
+        let outcome = handle_settings_key(&mut settings, key(KeyCode::Esc));
+
+        assert_eq!(outcome, Some(SettingsOutcome::Cancelled));
     }
 }

@@ -6,5 +6,6 @@ pub mod init;
 pub mod open;
 pub mod path_display;
 pub mod search;
+pub mod settings;
 pub mod shell;
 pub mod ui;

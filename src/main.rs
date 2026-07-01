@@ -5,7 +5,10 @@ use at::history::{HistoryDb, HistorySource, PathKind, default_history_path};
 use at::open::{OpenAction, OpenMode, resolve_editor_command, resolve_open_action};
 use at::search::{SearchFilter, SearchRequest, search};
 use at::ui::palette::{PaletteItem, PaletteItemKind, PaletteState};
-use at::ui::runtime::{UiOutcome, run_flow_palette, run_palette, run_search_palette};
+use at::ui::runtime::{
+    SettingsOutcome, UiOutcome, run_flow_palette, run_menu_palette, run_palette,
+    run_search_palette, run_settings_palette,
+};
 use clap::Parser;
 use std::collections::HashSet;
 use std::fs::OpenOptions;
@@ -20,7 +23,7 @@ fn main() -> Result<()> {
         Command::Recent { shell } => run_recent(shell),
         Command::Flow { shell } => run_flow(shell),
         Command::Search { shell, query } => run_search(shell, Command::search_query(&query)),
-        Command::Setting { path } => run_setting(false, path),
+        Command::Setting { path } => run_setting(false, path).map(|_| ()),
         Command::Init => at::init::run_init(),
         Command::RecentRecord { path } => record_cd_hook(Path::new(&path)),
         Command::Shell { command } => match command {
@@ -41,19 +44,24 @@ fn load_config() -> Result<Config> {
 }
 
 fn run_menu(shell: bool) -> Result<()> {
-    let state = PaletteState::new(vec![
-        PaletteItem::menu("Recent projects"),
-        PaletteItem::menu("Flow navigator"),
-        PaletteItem::menu("Search files"),
-        PaletteItem::menu("Settings"),
-    ]);
+    loop {
+        let state = PaletteState::new(vec![
+            PaletteItem::menu("Recent projects"),
+            PaletteItem::menu("Flow navigator"),
+            PaletteItem::menu("Search files"),
+            PaletteItem::menu("Settings"),
+        ]);
 
-    match run_palette("@", state)? {
-        UiOutcome::Selected(0) => run_recent(shell),
-        UiOutcome::Selected(1) => run_flow(shell),
-        UiOutcome::Selected(2) => run_search(shell, None),
-        UiOutcome::Selected(3) => run_setting(shell, false),
-        _ => Ok(()),
+        match run_menu_palette("@ Menu", state)? {
+            UiOutcome::Selected(0) => return run_recent(shell),
+            UiOutcome::Selected(1) => return run_flow(shell),
+            UiOutcome::Selected(2) => return run_search(shell, None),
+            UiOutcome::Selected(3) => match run_setting(shell, false)? {
+                SettingResult::Cancelled => continue,
+                SettingResult::Saved | SettingResult::PathPrinted => return Ok(()),
+            },
+            _ => return Ok(()),
+        }
     }
 }
 
@@ -164,8 +172,8 @@ fn handle_palette_result(
     shell: bool,
     config: &Config,
 ) -> Result<()> {
-    let outcome = run_palette(title, state.clone())?;
-    handle_open_outcome(&outcome, &state, shell, config)
+    let response = run_palette(title, state)?;
+    handle_open_outcome(&response.outcome, &response.state, shell, config)
 }
 
 fn handle_open_outcome(
@@ -354,18 +362,35 @@ fn setting_stream(shell: bool) -> InfoStream {
     }
 }
 
-fn run_setting(shell: bool, path_only: bool) -> Result<()> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SettingResult {
+    Saved,
+    Cancelled,
+    PathPrinted,
+}
+
+fn run_setting(shell: bool, path_only: bool) -> Result<SettingResult> {
     let path = default_config_path();
     if path_only {
         match setting_stream(shell) {
             InfoStream::Stdout => println!("{}", path.display()),
             InfoStream::Stderr => eprintln!("{}", path.display()),
         }
-        return Ok(());
+        return Ok(SettingResult::PathPrinted);
     }
 
     let config = ensure_config_file(&path)?;
-    launch_editor(&config.open.editor, &path, shell)
+    match run_settings_palette(config)? {
+        SettingsOutcome::Saved(config) => {
+            config.save_to(&path)?;
+            match setting_stream(shell) {
+                InfoStream::Stdout => println!("Config saved to {}", path.display()),
+                InfoStream::Stderr => eprintln!("Config saved to {}", path.display()),
+            }
+            Ok(SettingResult::Saved)
+        }
+        SettingsOutcome::Cancelled => Ok(SettingResult::Cancelled),
+    }
 }
 
 fn ensure_config_file(path: &Path) -> Result<Config> {
@@ -479,6 +504,17 @@ mod tests {
     fn setting_stream_uses_stderr_for_shell_mode() {
         assert_eq!(setting_stream(false), InfoStream::Stdout);
         assert_eq!(setting_stream(true), InfoStream::Stderr);
+    }
+
+    #[test]
+    fn ensure_config_file_creates_default_config_when_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("at").join("config.toml");
+
+        let config = ensure_config_file(&path).unwrap();
+
+        assert_eq!(config, Config::default());
+        assert_eq!(Config::load_or_default(&path).unwrap(), Config::default());
     }
 
     #[test]

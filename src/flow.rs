@@ -27,11 +27,17 @@ impl FlowState {
         list_entries(&self.cwd)
     }
 
-    pub fn parent(&mut self) {
+    pub fn parent(&mut self) -> Result<()> {
+        let previous = self.cwd.clone();
         if let Some(parent) = self.cwd.parent() {
             self.cwd = parent.to_path_buf();
-            self.selected = 0;
+            self.selected = self
+                .entries()?
+                .iter()
+                .position(|entry| entry.path == previous)
+                .unwrap_or(0);
         }
+        Ok(())
     }
 
     pub fn enter(&mut self, entry: &FlowEntry) {
@@ -112,8 +118,9 @@ mod tests {
     }
 
     #[test]
-    fn navigation_resets_selection() {
+    fn navigation_updates_selection() {
         let dir = tempfile::tempdir().unwrap();
+        fs::create_dir(dir.path().join("alpha")).unwrap();
         let child = dir.path().join("src");
         fs::create_dir(&child).unwrap();
         fs::write(dir.path().join("Cargo.toml"), "").unwrap();
@@ -122,10 +129,10 @@ mod tests {
             cwd: child.clone(),
             selected: 2,
         };
-        state.parent();
+        state.parent().unwrap();
 
         assert_eq!(state.cwd, dir.path());
-        assert_eq!(state.selected, 0);
+        assert_eq!(state.entries().unwrap()[state.selected].name, "src");
 
         state.selected = 1;
         state.enter(&FlowEntry {
