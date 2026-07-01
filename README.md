@@ -93,6 +93,8 @@ Atflow follows the XDG directories used by the platform:
 
 The main `@` menu links to recent projects, flow navigation, search, and settings.
 
+When a page is opened from the main `@` menu, Esc returns to the main menu. When a page is opened directly, Esc exits.
+
 `@recent` shows recently opened directories from Atflow history. If the optional `cd` hook is enabled, ordinary shell `cd` usage is also recorded.
 
 `@flow` starts from the current Git root by default when one is found, otherwise from the current directory. The init wizard can disable Git-root start. Use Up/Down to move, Left or `h` to go to the parent directory, Right or `l` to enter the selected directory, and Enter to open the selected item. When you move to a parent directory, the cursor stays on the directory you just left.
@@ -100,6 +102,8 @@ The main `@` menu links to recent projects, flow navigation, search, and setting
 `@search` searches the current directory, configured roots, and recent directories. `@search query` starts with `query` already typed; multiple words are joined with spaces. Tab cycles all, dirs, and files. Search respects git ignore files and the configured ignore names.
 
 Long paths are clipped in the middle to fit the terminal row. Press Space to expand the selected path to its full text; moving the selection collapses it again.
+
+Theme changes in settings are saved to config and used by the TUI palettes.
 
 ## Init Choices
 

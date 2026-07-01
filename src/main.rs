@@ -20,9 +20,11 @@ fn main() -> Result<()> {
     let command = cli.command.unwrap_or(Command::Menu { shell: false });
     match command {
         Command::Menu { shell } => run_menu(shell),
-        Command::Recent { shell } => run_recent(shell),
-        Command::Flow { shell } => run_flow(shell),
-        Command::Search { shell, query } => run_search(shell, Command::search_query(&query)),
+        Command::Recent { shell } => run_recent(shell).map(|_| ()),
+        Command::Flow { shell } => run_flow(shell).map(|_| ()),
+        Command::Search { shell, query } => {
+            run_search(shell, Command::search_query(&query)).map(|_| ())
+        }
         Command::Setting { path } => run_setting(false, path).map(|_| ()),
         Command::Init => at::init::run_init(),
         Command::RecentRecord { path } => record_cd_hook(Path::new(&path)),
@@ -45,6 +47,7 @@ fn load_config() -> Result<Config> {
 
 fn run_menu(shell: bool) -> Result<()> {
     loop {
+        let config = load_config()?;
         let state = PaletteState::new(vec![
             PaletteItem::menu("Recent projects"),
             PaletteItem::menu("Flow navigator"),
@@ -52,20 +55,29 @@ fn run_menu(shell: bool) -> Result<()> {
             PaletteItem::menu("Settings"),
         ]);
 
-        match run_menu_palette("@ Menu", state)? {
-            UiOutcome::Selected(0) => return run_recent(shell),
-            UiOutcome::Selected(1) => return run_flow(shell),
-            UiOutcome::Selected(2) => return run_search(shell, None),
+        match run_menu_palette("@ Menu", state, config.general.theme)? {
+            UiOutcome::Selected(0) => match menu_child_decision(run_recent(shell)?) {
+                MenuChildDecision::BackToMenu => continue,
+                MenuChildDecision::ExitMenu => return Ok(()),
+            },
+            UiOutcome::Selected(1) => match menu_child_decision(run_flow(shell)?) {
+                MenuChildDecision::BackToMenu => continue,
+                MenuChildDecision::ExitMenu => return Ok(()),
+            },
+            UiOutcome::Selected(2) => match menu_child_decision(run_search(shell, None)?) {
+                MenuChildDecision::BackToMenu => continue,
+                MenuChildDecision::ExitMenu => return Ok(()),
+            },
             UiOutcome::Selected(3) => match run_setting(shell, false)? {
-                SettingResult::Cancelled => continue,
-                SettingResult::Saved | SettingResult::PathPrinted => return Ok(()),
+                SettingResult::Cancelled | SettingResult::Saved => continue,
+                SettingResult::PathPrinted => return Ok(()),
             },
             _ => return Ok(()),
         }
     }
 }
 
-fn run_recent(shell: bool) -> Result<()> {
+fn run_recent(shell: bool) -> Result<PageResult> {
     let config = load_config()?;
     let db = HistoryDb::open(&default_history_path())?;
     let items = db
@@ -77,18 +89,22 @@ fn run_recent(shell: bool) -> Result<()> {
     handle_palette_result("@recent", PaletteState::new(items), shell, &config)
 }
 
-fn run_flow(shell: bool) -> Result<()> {
+fn run_flow(shell: bool) -> Result<PageResult> {
     let config = load_config()?;
     let start = at::flow::flow_start(
         &std::env::current_dir()?,
         config.general.start_from_git_root,
     );
-    let response = run_flow_palette("@flow", at::flow::FlowState::new(start))?;
+    let response = run_flow_palette(
+        "@flow",
+        at::flow::FlowState::new(start),
+        config.general.theme,
+    )?;
 
     handle_open_outcome(&response.outcome, &response.state, shell, &config)
 }
 
-fn run_search(shell: bool, query: Option<String>) -> Result<()> {
+fn run_search(shell: bool, query: Option<String>) -> Result<PageResult> {
     let config = load_config()?;
     let roots = search_roots(&config)?;
     let refresh = |query_text: &str, filter: SearchFilter| {
@@ -98,7 +114,7 @@ fn run_search(shell: bool, query: Option<String>) -> Result<()> {
     let mut state = PaletteState::new(refresh(&initial_query, SearchFilter::All)?);
     state.query = initial_query;
 
-    let response = run_search_palette("@search", state, refresh)?;
+    let response = run_search_palette("@search", state, refresh, config.general.theme)?;
     handle_open_outcome(&response.outcome, &response.state, shell, &config)
 }
 
@@ -171,8 +187,8 @@ fn handle_palette_result(
     state: PaletteState,
     shell: bool,
     config: &Config,
-) -> Result<()> {
-    let response = run_palette(title, state)?;
+) -> Result<PageResult> {
+    let response = run_palette(title, state, config.general.theme)?;
     handle_open_outcome(&response.outcome, &response.state, shell, config)
 }
 
@@ -181,11 +197,33 @@ fn handle_open_outcome(
     state: &PaletteState,
     shell: bool,
     config: &Config,
-) -> Result<()> {
+) -> Result<PageResult> {
+    if matches!(outcome, UiOutcome::Cancelled) {
+        return Ok(PageResult::Cancelled);
+    }
     if let Some(target) = selected_open_target(outcome, state) {
         run_open_action(&target.path, target.is_dir, target.mode, shell, config)?;
     }
-    Ok(())
+    Ok(PageResult::Done)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PageResult {
+    Done,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MenuChildDecision {
+    BackToMenu,
+    ExitMenu,
+}
+
+fn menu_child_decision(result: PageResult) -> MenuChildDecision {
+    match result {
+        PageResult::Cancelled => MenuChildDecision::BackToMenu,
+        PageResult::Done => MenuChildDecision::ExitMenu,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -464,6 +502,18 @@ mod tests {
         assert_eq!(selected_open_target(&UiOutcome::Cancelled, &state), None);
         assert_eq!(selected_open_target(&UiOutcome::Selected(0), &state), None);
         assert_eq!(selected_open_target(&UiOutcome::Selected(99), &state), None);
+    }
+
+    #[test]
+    fn menu_child_cancel_goes_back_to_menu() {
+        assert_eq!(
+            menu_child_decision(PageResult::Cancelled),
+            MenuChildDecision::BackToMenu
+        );
+        assert_eq!(
+            menu_child_decision(PageResult::Done),
+            MenuChildDecision::ExitMenu
+        );
     }
 
     #[test]

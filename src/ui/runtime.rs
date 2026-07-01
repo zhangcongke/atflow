@@ -9,7 +9,6 @@ use ratatui::{
     Frame, Terminal,
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout},
-    style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, Paragraph},
 };
@@ -23,6 +22,7 @@ use crate::flow::{FlowEntry, FlowState};
 use crate::search::SearchFilter;
 use crate::settings::SettingsState;
 use crate::ui::palette::{PaletteItem, PaletteItemKind, PaletteState};
+use crate::ui::theme::{PaletteTheme, ThemeName};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UiOutcome {
@@ -44,13 +44,18 @@ pub enum SettingsOutcome {
     Cancelled,
 }
 
-pub fn run_menu_palette(title: &str, mut state: PaletteState) -> Result<UiOutcome> {
+pub fn run_menu_palette(
+    title: &str,
+    mut state: PaletteState,
+    theme_name: ThemeName,
+) -> Result<UiOutcome> {
     let session = TerminalSession::enter()?;
     let mut terminal = Terminal::new(CrosstermBackend::new(session.output()?))?;
     terminal.clear()?;
+    let theme = PaletteTheme::from(theme_name);
 
     loop {
-        terminal.draw(|frame| render_palette(frame, title, &state, PaletteChrome::Menu))?;
+        terminal.draw(|frame| render_palette(frame, title, &state, PaletteChrome::Menu, theme))?;
         if let Event::Key(key) = event::read()? {
             if !is_key_press(key) {
                 continue;
@@ -62,13 +67,18 @@ pub fn run_menu_palette(title: &str, mut state: PaletteState) -> Result<UiOutcom
     }
 }
 
-pub fn run_palette(title: &str, mut state: PaletteState) -> Result<UiResponse> {
+pub fn run_palette(
+    title: &str,
+    mut state: PaletteState,
+    theme_name: ThemeName,
+) -> Result<UiResponse> {
     let session = TerminalSession::enter()?;
     let mut terminal = Terminal::new(CrosstermBackend::new(session.output()?))?;
     terminal.clear()?;
+    let theme = PaletteTheme::from(theme_name);
 
     loop {
-        terminal.draw(|frame| render_palette(frame, title, &state, PaletteChrome::List))?;
+        terminal.draw(|frame| render_palette(frame, title, &state, PaletteChrome::List, theme))?;
         if let Event::Key(key) = event::read()? {
             if !is_key_press(key) {
                 continue;
@@ -84,6 +94,7 @@ pub fn run_search_palette<F>(
     title: &str,
     mut state: PaletteState,
     mut refresh: F,
+    theme_name: ThemeName,
 ) -> Result<UiResponse>
 where
     F: FnMut(&str, SearchFilter) -> Result<Vec<PaletteItem>>,
@@ -91,9 +102,11 @@ where
     let _session = TerminalSession::enter()?;
     let mut terminal = Terminal::new(CrosstermBackend::new(_session.output()?))?;
     terminal.clear()?;
+    let theme = PaletteTheme::from(theme_name);
 
     loop {
-        terminal.draw(|frame| render_palette(frame, title, &state, PaletteChrome::Search))?;
+        terminal
+            .draw(|frame| render_palette(frame, title, &state, PaletteChrome::Search, theme))?;
         if let Event::Key(key) = event::read()? {
             if !is_key_press(key) {
                 continue;
@@ -105,14 +118,19 @@ where
     }
 }
 
-pub fn run_flow_palette(title: &str, mut flow: FlowState) -> Result<UiResponse> {
+pub fn run_flow_palette(
+    title: &str,
+    mut flow: FlowState,
+    theme_name: ThemeName,
+) -> Result<UiResponse> {
     let _session = TerminalSession::enter()?;
     let mut terminal = Terminal::new(CrosstermBackend::new(_session.output()?))?;
     terminal.clear()?;
     let mut state = flow_palette_state(&flow)?;
+    let theme = PaletteTheme::from(theme_name);
 
     loop {
-        terminal.draw(|frame| render_palette(frame, title, &state, PaletteChrome::Flow))?;
+        terminal.draw(|frame| render_palette(frame, title, &state, PaletteChrome::Flow, theme))?;
         if let Event::Key(key) = event::read()? {
             if !is_key_press(key) {
                 continue;
@@ -132,8 +150,10 @@ pub fn run_settings_palette(config: Config) -> Result<SettingsOutcome> {
 
     loop {
         let state = settings_palette_state(&settings);
-        terminal
-            .draw(|frame| render_palette(frame, "@ Setting", &state, PaletteChrome::Settings))?;
+        let theme = PaletteTheme::from(settings.config().general.theme);
+        terminal.draw(|frame| {
+            render_palette(frame, "@ Setting", &state, PaletteChrome::Settings, theme)
+        })?;
         if let Event::Key(key) = event::read()? {
             if !is_key_press(key) {
                 continue;
@@ -446,7 +466,13 @@ enum PaletteChrome {
     Settings,
 }
 
-fn render_palette(frame: &mut Frame<'_>, title: &str, state: &PaletteState, chrome: PaletteChrome) {
+fn render_palette(
+    frame: &mut Frame<'_>,
+    title: &str,
+    state: &PaletteState,
+    chrome: PaletteChrome,
+    theme: PaletteTheme,
+) {
     let area = frame.area();
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -458,13 +484,13 @@ fn render_palette(frame: &mut Frame<'_>, title: &str, state: &PaletteState, chro
         .split(area);
 
     frame.render_widget(
-        Paragraph::new(header_line(title, state, chrome))
+        Paragraph::new(header_line(title, state, chrome, theme))
             .block(Block::default().borders(Borders::ALL)),
         chunks[0],
     );
 
     let list_width = usize::from(chunks[1].width.saturating_sub(2));
-    let rows = palette_rows(state, list_width);
+    let rows = palette_rows(state, list_width, theme);
     frame.render_widget(
         List::new(rows).block(Block::default().borders(Borders::LEFT | Borders::RIGHT)),
         chunks[1],
@@ -476,11 +502,13 @@ fn render_palette(frame: &mut Frame<'_>, title: &str, state: &PaletteState, chro
     );
 }
 
-fn header_line(title: &str, state: &PaletteState, chrome: PaletteChrome) -> Line<'static> {
-    let title_span = Span::styled(
-        title.to_owned(),
-        Style::default().add_modifier(Modifier::BOLD),
-    );
+fn header_line(
+    title: &str,
+    state: &PaletteState,
+    chrome: PaletteChrome,
+    theme: PaletteTheme,
+) -> Line<'static> {
+    let title_span = Span::styled(title.to_owned(), theme.title_style());
     if chrome != PaletteChrome::Search {
         return Line::from(title_span);
     }
@@ -493,9 +521,9 @@ fn header_line(title: &str, state: &PaletteState, chrome: PaletteChrome) -> Line
     Line::from(vec![
         title_span,
         Span::raw("  query: "),
-        Span::styled(query.to_owned(), Style::default().fg(Color::Yellow)),
+        Span::styled(query.to_owned(), theme.query_style()),
         Span::raw("  filter: "),
-        Span::styled(filter_label(state.filter), Style::default().fg(Color::Cyan)),
+        Span::styled(filter_label(state.filter), theme.filter_style()),
     ])
 }
 
@@ -529,9 +557,13 @@ fn settings_footer_text() -> &'static str {
     "Esc cancel  Enter save  Up/Down move  Left/Right change"
 }
 
-fn palette_rows(state: &PaletteState, area_width: usize) -> Vec<ListItem<'static>> {
+fn palette_rows(
+    state: &PaletteState,
+    area_width: usize,
+    theme: PaletteTheme,
+) -> Vec<ListItem<'static>> {
     if state.items.is_empty() {
-        return vec![ListItem::new("  No results").style(Style::default().fg(Color::DarkGray))];
+        return vec![ListItem::new("  No results").style(theme.muted_style())];
     }
 
     let selected = state.selected_index();
@@ -548,20 +580,14 @@ fn palette_rows(state: &PaletteState, area_width: usize) -> Vec<ListItem<'static
                 .display_label_at(index, label_width)
                 .unwrap_or_else(|| item.label.clone());
             let style = if Some(index) == selected {
-                Style::default()
-                    .fg(Color::Black)
-                    .bg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD)
+                theme.selected_style()
             } else {
-                Style::default()
+                Default::default()
             };
 
             let mut spans = vec![Span::raw(format!("{marker} ")), Span::raw(label)];
             if let Some(suffix) = suffix {
-                spans.push(Span::styled(
-                    format!("  {suffix}"),
-                    Style::default().fg(Color::DarkGray),
-                ));
+                spans.push(Span::styled(format!("  {suffix}"), theme.muted_style()));
             }
 
             ListItem::new(Line::from(spans)).style(style)
@@ -860,15 +886,32 @@ mod tests {
     #[test]
     fn menu_header_and_footer_are_not_search_controls() {
         let state = PaletteState::new(vec![item("Settings")]);
-        let header = header_line("@ Menu", &state, PaletteChrome::Menu)
-            .spans
-            .iter()
-            .map(|span| span.content.as_ref())
-            .collect::<String>();
+        let header = header_line(
+            "@ Menu",
+            &state,
+            PaletteChrome::Menu,
+            PaletteTheme::from(ThemeName::Mist),
+        )
+        .spans
+        .iter()
+        .map(|span| span.content.as_ref())
+        .collect::<String>();
 
         assert_eq!(header, "@ Menu");
         assert!(!menu_footer_text().contains("Tab filter"));
         assert!(!menu_footer_text().contains("Space expand"));
+    }
+
+    #[test]
+    fn search_header_uses_selected_theme_colors() {
+        let mut state = PaletteState::new(vec![item("Settings")]);
+        state.query = "abc".to_owned();
+        let theme = PaletteTheme::from(ThemeName::Paper);
+
+        let header = header_line("@search", &state, PaletteChrome::Search, theme);
+
+        assert_eq!(header.spans[2].style.fg, Some(theme.query_fg));
+        assert_eq!(header.spans[4].style.fg, Some(theme.filter_fg));
     }
 
     #[test]
