@@ -19,6 +19,7 @@ Status: MVP development preview. Linux and WSL are the first supported environme
 After `at init`, restart your shell or source the generated shell integration file to enable:
 
 - `@`: main menu.
+- `@ recent`, `@ flow`, `@ search`, `@ setting`: space-separated shortcuts.
 - `@recent`: recent directories.
 - `@flow`: flow navigator.
 - `@search`: search palette.
@@ -86,7 +87,7 @@ Atflow follows the XDG directories used by the platform:
 - Shell integration: `${XDG_CONFIG_HOME:-$HOME/.config}/at/shell.sh`
 - History: `${XDG_DATA_HOME:-$HOME/.local/share}/at/history.sqlite`
 
-`@setting` or `at setting` opens the active config file. Use `at setting --path` when you only need the path.
+`@setting` or `at setting` opens the active config file. Use `at setting --path` when you only need the path. If the configured editor is not installed, Atflow falls back to the first available editor from `nvim`, `vim`, `vi`, and `nano`.
 
 ## MVP Behavior
 

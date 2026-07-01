@@ -12,7 +12,18 @@ pub fn cd_command(path: &Path) -> String {
 }
 
 pub fn functions_block() -> &'static str {
-    r#"@() { local out; out="$(command at menu --shell "$@")" || return; eval "$out"; }
+    r#"@() {
+  local cmd="${1:-}"
+  local out
+  case "$cmd" in
+    recent) shift; out="$(command at recent --shell "$@")" || return; eval "$out" ;;
+    flow) shift; out="$(command at flow --shell "$@")" || return; eval "$out" ;;
+    search) shift; out="$(command at search --shell "$@")" || return; eval "$out" ;;
+    setting) shift; command at setting "$@" ;;
+    "") out="$(command at menu --shell)" || return; eval "$out" ;;
+    *) out="$(command at menu --shell "$@")" || return; eval "$out" ;;
+  esac
+}
 @recent() { local out; out="$(command at recent --shell "$@")" || return; eval "$out"; }
 @flow() { local out; out="$(command at flow --shell "$@")" || return; eval "$out"; }
 @search() { local out; out="$(command at search --shell "$@")" || return; eval "$out"; }
@@ -71,7 +82,11 @@ mod tests {
     #[test]
     fn functions_use_command_at_and_propagate_failures() {
         let block = functions_block();
-        assert!(block.contains(r#"out="$(command at menu --shell "$@")" || return"#));
+        assert!(block.contains(r#"out="$(command at menu --shell)" || return"#));
+        assert!(
+            block.contains(r#"recent) shift; out="$(command at recent --shell "$@")" || return"#)
+        );
+        assert!(block.contains(r#"setting) shift; command at setting "$@""#));
         assert!(block.contains(r#"out="$(command at recent --shell "$@")" || return"#));
         assert!(block.contains(r#"out="$(command at flow --shell "$@")" || return"#));
         assert!(block.contains(r#"out="$(command at search --shell "$@")" || return"#));

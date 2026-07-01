@@ -93,6 +93,44 @@ fn setting_opens_config_in_configured_editor() {
 }
 
 #[test]
+fn setting_falls_back_when_configured_editor_is_missing() {
+    let config_home = tempfile::tempdir().unwrap();
+    let bin_dir = tempfile::tempdir().unwrap();
+    let editor_log = bin_dir.path().join("editor.log");
+    let fallback_editor = bin_dir.path().join("vim");
+    let config_path = config_home.path().join("at").join("config.toml");
+    let mut config = Config::default();
+    config.open.editor = "missing-atflow-editor".to_owned();
+    config.save_to(&config_path).unwrap();
+
+    fs::write(
+        &fallback_editor,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$1\" > '{}'\n",
+            editor_log.display()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&fallback_editor, fs::Permissions::from_mode(0o755)).unwrap();
+
+    AssertCommand::cargo_bin("at")
+        .unwrap()
+        .arg("setting")
+        .env("XDG_CONFIG_HOME", config_home.path())
+        .env("PATH", bin_dir.path())
+        .assert()
+        .success()
+        .stderr(predicates::str::contains(
+            "editor `missing-atflow-editor` was not found; falling back to `vim`",
+        ));
+
+    assert_eq!(
+        fs::read_to_string(editor_log).unwrap().trim(),
+        config_path.display().to_string()
+    );
+}
+
+#[test]
 fn init_accepts_newline_defaults_and_writes_config() {
     let home = tempfile::tempdir().unwrap();
     let config_home = tempfile::tempdir().unwrap();
@@ -123,7 +161,7 @@ fn init_accepts_newline_defaults_and_writes_config() {
     assert!(!config.history.record_shell_cd);
     assert!(config.general.start_from_git_root);
     assert_eq!(config.general.theme, ThemeName::Mist);
-    assert_eq!(config.open.editor, "nvim");
+    assert!(!config.open.editor.is_empty());
     assert_eq!(config.search.roots, ["~/work", "~/code", "~/Documents"]);
 }
 
@@ -192,6 +230,32 @@ fn init_fresh_config_uses_editor_env_default() {
 }
 
 #[test]
+fn init_uses_available_editor_when_editor_env_is_missing() {
+    let home = tempfile::tempdir().unwrap();
+    let config_home = tempfile::tempdir().unwrap();
+    let bin_dir = tempfile::tempdir().unwrap();
+    let config_path = config_home.path().join("at").join("config.toml");
+    let fallback_editor = bin_dir.path().join("vim");
+    fs::write(&fallback_editor, "#!/bin/sh\nexit 0\n").unwrap();
+    fs::set_permissions(&fallback_editor, fs::Permissions::from_mode(0o755)).unwrap();
+
+    AssertCommand::cargo_bin("at")
+        .unwrap()
+        .arg("init")
+        .env("HOME", home.path())
+        .env("SHELL", "/bin/bash")
+        .env("XDG_CONFIG_HOME", config_home.path())
+        .env("PATH", bin_dir.path())
+        .env_remove("EDITOR")
+        .write_stdin("\n\n\n\n\n\n")
+        .assert()
+        .success();
+
+    let config = Config::load_or_default(&config_path).unwrap();
+    assert_eq!(config.open.editor, "vim");
+}
+
+#[test]
 fn init_cd_hook_only_prints_hook_guidance_and_saves_cd_history() {
     let home = tempfile::tempdir().unwrap();
     let config_home = tempfile::tempdir().unwrap();
@@ -240,6 +304,25 @@ fn shell_print_outputs_functions() {
         .success()
         .stdout(predicates::str::contains("@()"))
         .stdout(predicates::str::contains("@search()"));
+}
+
+#[test]
+fn at_function_dispatches_space_separated_setting_command() {
+    let config_home = tempfile::tempdir().unwrap();
+    let bin_path = assert_cmd::cargo::cargo_bin("at");
+    let bin_dir = bin_path.parent().unwrap();
+    let expected = config_home.path().join("at").join("config.toml");
+    let script = format!(
+        r#"export PATH='{}':"$PATH"; eval "$(at shell print)"; @ setting --path"#,
+        bin_dir.display()
+    );
+
+    AssertCommand::new("bash")
+        .args(["-lc", &script])
+        .env("XDG_CONFIG_HOME", config_home.path())
+        .assert()
+        .success()
+        .stdout(format!("{}\n", expected.display()));
 }
 
 #[test]

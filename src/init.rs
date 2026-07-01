@@ -21,10 +21,7 @@ impl Default for InitAnswers {
         Self {
             install_shell_functions: true,
             enable_cd_hook: false,
-            editor: std::env::var("EDITOR")
-                .ok()
-                .filter(|editor| !editor.trim().is_empty())
-                .unwrap_or_else(|| "nvim".to_owned()),
+            editor: crate::open::default_editor_command(),
             search_roots: vec![
                 "~/work".to_owned(),
                 "~/code".to_owned(),

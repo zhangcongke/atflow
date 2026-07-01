@@ -2,7 +2,7 @@ use anyhow::{Context, Result, bail};
 use at::cli::{Cli, Command, ShellCommand};
 use at::config::{Config, default_config_path};
 use at::history::{HistoryDb, HistorySource, PathKind, default_history_path};
-use at::open::{OpenAction, OpenMode, resolve_open_action};
+use at::open::{OpenAction, OpenMode, resolve_editor_command, resolve_open_action};
 use at::search::{SearchFilter, SearchRequest, search};
 use at::ui::palette::{PaletteItem, PaletteItemKind, PaletteState};
 use at::ui::runtime::{UiOutcome, run_flow_palette, run_palette, run_search_palette};
@@ -219,7 +219,11 @@ fn run_open_action(
                 println!("{}", path.display());
             }
         }
-        OpenAction::Editor { command, path } | OpenAction::System { command, path } => {
+        OpenAction::Editor { command, path } => {
+            launch_editor(&command, &path, shell)?;
+            record_atflow_open(&path, PathKind::File, config)?;
+        }
+        OpenAction::System { command, path } => {
             launch_opener(&command, &path, shell)?;
             record_atflow_open(&path, PathKind::File, config)?;
         }
@@ -255,6 +259,19 @@ fn launch_opener(command: &str, path: &Path, shell: bool) -> Result<()> {
         bail!("opener `{command}` exited with {status}");
     }
     Ok(())
+}
+
+fn launch_editor(command: &str, path: &Path, shell: bool) -> Result<()> {
+    let editor = resolve_editor_command(command);
+    if let Some(previous) = editor.fallback_from.as_deref()
+        && previous != editor.command
+    {
+        eprintln!(
+            "editor `{previous}` was not found; falling back to `{}`",
+            editor.command
+        );
+    }
+    launch_opener(&editor.command, path, shell)
 }
 
 fn attach_tty_stdio(command: &mut std::process::Command) -> Result<()> {
@@ -348,7 +365,7 @@ fn run_setting(shell: bool, path_only: bool) -> Result<()> {
     }
 
     let config = ensure_config_file(&path)?;
-    launch_opener(&config.open.editor, &path, shell)
+    launch_editor(&config.open.editor, &path, shell)
 }
 
 fn ensure_config_file(path: &Path) -> Result<Config> {
