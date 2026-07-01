@@ -58,11 +58,15 @@ impl SettingsState {
     }
 
     pub fn move_up(&mut self) {
-        self.selected = self.selected.saturating_sub(1);
+        self.selected = if self.selected == 0 {
+            FIELDS.len() - 1
+        } else {
+            self.selected - 1
+        };
     }
 
     pub fn move_down(&mut self) {
-        self.selected = self.selected.saturating_add(1).min(FIELDS.len() - 1);
+        self.selected = (self.selected + 1) % FIELDS.len();
     }
 
     pub fn change_left(&mut self) {
@@ -309,6 +313,17 @@ mod tests {
 
         state.change_left();
         assert!(state.config().general.start_from_git_root);
+    }
+
+    #[test]
+    fn movement_wraps_between_first_and_last_setting_rows() {
+        let mut state = SettingsState::new(Config::default());
+
+        state.move_up();
+        assert_eq!(state.selected(), FIELDS.len() - 1);
+
+        state.move_down();
+        assert_eq!(state.selected(), 0);
     }
 
     #[test]

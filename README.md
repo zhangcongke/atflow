@@ -95,6 +95,8 @@ The main `@` menu links to recent projects, flow navigation, search, and setting
 
 When a page is opened from the main `@` menu, Esc returns to the main menu. When a page is opened directly, Esc exits.
 
+Long lists scroll to keep the selected row visible. Pressing Down on the last item wraps to the first item, and pressing Up on the first item wraps to the last item.
+
 `@recent` shows recently opened directories from Atflow history. If the optional `cd` hook is enabled, ordinary shell `cd` usage is also recorded.
 
 `@flow` starts from the current Git root by default when one is found, otherwise from the current directory. The init wizard can disable Git-root start. Use Up/Down to move, Left or `h` to go to the parent directory, Right or `l` to enter the selected directory, and Enter to open the selected item. When you move to a parent directory, the cursor stays on the directory you just left.

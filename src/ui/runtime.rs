@@ -14,6 +14,7 @@ use ratatui::{
 };
 use std::fs::{File, OpenOptions};
 use std::io::{self, Write};
+use std::ops::Range;
 #[cfg(unix)]
 use std::os::fd::{AsRawFd, RawFd};
 
@@ -490,7 +491,8 @@ fn render_palette(
     );
 
     let list_width = usize::from(chunks[1].width.saturating_sub(2));
-    let rows = palette_rows(state, list_width, theme);
+    let list_height = usize::from(chunks[1].height);
+    let rows = palette_rows(state, list_width, list_height, theme);
     frame.render_widget(
         List::new(rows).block(Block::default().borders(Borders::LEFT | Borders::RIGHT)),
         chunks[1],
@@ -560,18 +562,26 @@ fn settings_footer_text() -> &'static str {
 fn palette_rows(
     state: &PaletteState,
     area_width: usize,
+    area_height: usize,
     theme: PaletteTheme,
 ) -> Vec<ListItem<'static>> {
     if state.items.is_empty() {
         return vec![ListItem::new("  No results").style(theme.muted_style())];
     }
+    if area_height == 0 {
+        return Vec::new();
+    }
 
     let selected = state.selected_index();
+    let visible_range = visible_item_range(state, area_height);
     state
         .items
         .iter()
+        .take(visible_range.end)
+        .skip(visible_range.start)
         .enumerate()
-        .map(|(index, item)| {
+        .map(|(offset, item)| {
+            let index = visible_range.start + offset;
             let marker = if Some(index) == selected { ">" } else { " " };
             let suffix = palette_row_kind_text(item);
             let suffix_width = suffix.map(|text| text.chars().count() + 2).unwrap_or(0);
@@ -593,6 +603,21 @@ fn palette_rows(
             ListItem::new(Line::from(spans)).style(style)
         })
         .collect()
+}
+
+fn visible_item_range(state: &PaletteState, max_rows: usize) -> Range<usize> {
+    if state.items.is_empty() || max_rows == 0 {
+        return 0..0;
+    }
+
+    let len = state.items.len();
+    let selected = state.selected_index().unwrap_or(0);
+    if len <= max_rows {
+        return 0..len;
+    }
+
+    let start = selected.saturating_add(1).saturating_sub(max_rows);
+    start..(start + max_rows)
 }
 
 fn palette_row_kind_text(item: &PaletteItem) -> Option<&'static str> {
@@ -824,6 +849,15 @@ mod tests {
         assert_eq!(palette_row_kind_text(&state.items[0]), None);
         assert_eq!(palette_row_kind_text(&state.items[1]), Some("dir"));
         assert_eq!(palette_row_kind_text(&state.items[2]), Some("file"));
+    }
+
+    #[test]
+    fn palette_rows_scroll_to_keep_selected_item_visible() {
+        let mut state =
+            PaletteState::new((0..8).map(|index| item(&format!("item-{index}"))).collect());
+        state.selected = 7;
+
+        assert_eq!(visible_item_range(&state, 3), 5..8);
     }
 
     #[test]

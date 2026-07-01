@@ -87,14 +87,18 @@ impl PaletteState {
 
     pub fn move_down(&mut self) {
         if let Some(selected) = self.selected_index() {
-            self.selected = selected.saturating_add(1).min(self.items.len() - 1);
+            self.selected = (selected + 1) % self.items.len();
             self.expanded = false;
         }
     }
 
     pub fn move_up(&mut self) {
         if let Some(selected) = self.selected_index() {
-            self.selected = selected.saturating_sub(1);
+            self.selected = if selected == 0 {
+                self.items.len() - 1
+            } else {
+                selected - 1
+            };
             self.expanded = false;
         }
     }
@@ -181,7 +185,7 @@ mod tests {
     }
 
     #[test]
-    fn movement_saturates_and_resets_expansion_on_non_empty_lists() {
+    fn movement_wraps_and_resets_expansion_on_non_empty_lists() {
         let mut state = PaletteState::new(vec![menu_item("one"), menu_item("two")]);
 
         state.toggle_expanded();
@@ -191,12 +195,12 @@ mod tests {
 
         state.toggle_expanded();
         state.move_down();
-        assert_eq!(state.selected, 1);
+        assert_eq!(state.selected, 0);
         assert!(!state.expanded);
 
         state.toggle_expanded();
         state.move_up();
-        assert_eq!(state.selected, 0);
+        assert_eq!(state.selected, 1);
         assert!(!state.expanded);
 
         state.toggle_expanded();
