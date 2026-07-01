@@ -197,8 +197,8 @@ fn init_installs_shell_shortcuts_into_bash_profile() {
         )));
 
     let shell_script = fs::read_to_string(&shell_path).unwrap();
-    assert!(shell_script.contains("@()"));
-    assert!(shell_script.contains("@flow()"));
+    assert!(shell_script.contains("function @ {"));
+    assert!(shell_script.contains("function @flow"));
     assert!(!shell_script.contains("_atflow_record_cd"));
 
     let profile = fs::read_to_string(&profile_path).unwrap();
@@ -302,8 +302,8 @@ fn shell_print_outputs_functions() {
         .args(["shell", "print"])
         .assert()
         .success()
-        .stdout(predicates::str::contains("@()"))
-        .stdout(predicates::str::contains("@search()"));
+        .stdout(predicates::str::contains("function @ {"))
+        .stdout(predicates::str::contains("function @search"));
 }
 
 #[test]
@@ -319,6 +319,30 @@ fn at_function_dispatches_space_separated_setting_command() {
 
     AssertCommand::new("bash")
         .args(["-lc", &script])
+        .env("XDG_CONFIG_HOME", config_home.path())
+        .assert()
+        .success()
+        .stdout(format!("{}\n", expected.display()));
+}
+
+#[test]
+fn shell_print_can_be_sourced_by_interactive_bash() {
+    let home = tempfile::tempdir().unwrap();
+    let config_home = tempfile::tempdir().unwrap();
+    let shell_file = home.path().join("at-shell.sh");
+    let bin_path = assert_cmd::cargo::cargo_bin("at");
+    let bin_dir = bin_path.parent().unwrap();
+    let expected = config_home.path().join("at").join("config.toml");
+    let script = format!(
+        r#"shopt -s extglob; export PATH='{}':"$PATH"; at shell print > '{}'; . '{}'; @ setting --path"#,
+        bin_dir.display(),
+        shell_file.display(),
+        shell_file.display()
+    );
+
+    AssertCommand::new("bash")
+        .args(["-ic", &script])
+        .env("HOME", home.path())
         .env("XDG_CONFIG_HOME", config_home.path())
         .assert()
         .success()

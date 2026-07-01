@@ -12,7 +12,7 @@ pub fn cd_command(path: &Path) -> String {
 }
 
 pub fn functions_block() -> &'static str {
-    r#"@() {
+    r#"function @ {
   local cmd="${1:-}"
   local out
   case "$cmd" in
@@ -24,10 +24,10 @@ pub fn functions_block() -> &'static str {
     *) out="$(command at menu --shell "$@")" || return; eval "$out" ;;
   esac
 }
-@recent() { local out; out="$(command at recent --shell "$@")" || return; eval "$out"; }
-@flow() { local out; out="$(command at flow --shell "$@")" || return; eval "$out"; }
-@search() { local out; out="$(command at search --shell "$@")" || return; eval "$out"; }
-@setting() { command at setting "$@"; }"#
+function @recent { local out; out="$(command at recent --shell "$@")" || return; eval "$out"; }
+function @flow { local out; out="$(command at flow --shell "$@")" || return; eval "$out"; }
+function @search { local out; out="$(command at search --shell "$@")" || return; eval "$out"; }
+function @setting { command at setting "$@"; }"#
 }
 
 pub fn cd_hook_block() -> &'static str {
@@ -73,10 +73,10 @@ mod tests {
     #[test]
     fn functions_include_user_facing_entries() {
         let block = functions_block();
-        assert!(block.contains("@()"));
-        assert!(block.contains("@recent()"));
-        assert!(block.contains("@flow()"));
-        assert!(block.contains("@search()"));
+        assert!(block.contains("function @ {"));
+        assert!(block.contains("function @recent {"));
+        assert!(block.contains("function @flow {"));
+        assert!(block.contains("function @search {"));
     }
 
     #[test]
@@ -90,7 +90,7 @@ mod tests {
         assert!(block.contains(r#"out="$(command at recent --shell "$@")" || return"#));
         assert!(block.contains(r#"out="$(command at flow --shell "$@")" || return"#));
         assert!(block.contains(r#"out="$(command at search --shell "$@")" || return"#));
-        assert!(block.contains(r#"@setting() { command at setting "$@"; }"#));
+        assert!(block.contains(r#"function @setting { command at setting "$@"; }"#));
         assert!(!block.contains(r#"eval "$(at"#));
     }
 }
